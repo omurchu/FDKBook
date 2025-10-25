@@ -25,6 +25,24 @@ function App() {
 
   const historyEndRef = useRef<HTMLDivElement | null>(null);
 
+  const trimOrEmpty = (v: any) => (typeof v === "string" ? v.trim() : (v ?? ""));
+
+  const withHttps = (url: string) => {
+    if (!url) return "";
+    if (/^https?:\/\//i.test(url)) return url;
+    return "https://" + url;
+  };
+
+  const isYouTube = (url: string) => /(?:youtube\.com|youtu\.be)/i.test(url);
+  const youTubeId = (url: string) => {
+    // Handles https://www.youtube.com/watch?v=ID, youtu.be/ID, and embed forms
+    const m =
+      url.match(/[?&]v=([^&#]+)/) ||
+      url.match(/youtu\.be\/([^?&#/]+)/) ||
+      url.match(/youtube\.com\/embed\/([^?&#/]+)/);
+    return m ? m[1] : "";
+  };
+
   // // Prevent pane 3 from always jumping to bottom; instead, keep latest entry visible if near bottom
   // useEffect(() => {
   //   if (historyEndRef.current) {
@@ -48,12 +66,14 @@ function App() {
 
       const concepts: Concept[] = [];
       for (let i = 2; i < 37; i++) {
+        const pdfRaw = trimOrEmpty(data[i][0]);
+        const videoRaw = trimOrEmpty(data[i][1]);
         concepts.push({
           id: Number(data[i][3]),
-          title: data[i][4],
-          entire: data[i][2],
-          pdf: data[i][0],
-          video: data[i][1],
+          title: trimOrEmpty(data[i][4]),
+          entire: trimOrEmpty(data[i][2]),
+          pdf: pdfRaw,
+          video: videoRaw,
         });
       }
 
@@ -167,6 +187,48 @@ function App() {
         {/* Middle Pane */}
         <div className="pane middle-pane">
           <h3>{selectedConcept?.title || "Content"}</h3>
+          {selectedConcept && (selectedConcept.pdf || selectedConcept.video) && (
+            <div className="resource-row">
+              {selectedConcept.pdf && (
+                <a
+                  className="btn-link"
+                  href={withHttps(selectedConcept.pdf)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Open PDF"
+                >
+                  📄 PDF
+                </a>
+              )}
+
+              {selectedConcept.video && (
+                isYouTube(selectedConcept.video) ? (
+                  <div className="video-embed">
+                    <iframe
+                      title="Video"
+                      width="100%"
+                      height="280"
+                      src={`https://www.youtube.com/embed/${youTubeId(withHttps(selectedConcept.video))}`}
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                    />
+                  </div>
+                ) : (
+                  <a
+                    className="btn-link"
+                    href={withHttps(selectedConcept.video)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Open Video"
+                  >
+                    🎬 Video
+                  </a>
+                )
+              )}
+            </div>
+          )}
+
+
           <div className="content-box">{selectedConcept?.entire}</div>
           <div className="nav-buttons">
             <button onClick={handleBack} disabled={historyIndex <= 0}>

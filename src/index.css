@@ -117,3 +117,34 @@ body, html, #root {
   align-items: center;
   margin-top: 1rem;
 }
+/* handle video and resource links */
+.resource-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.25rem 0 0.75rem 0;
+  flex-wrap: wrap;
+}
+
+.btn-link {
+  display: inline-block;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid #888;
+  border-radius: 4px;
+  background: #fff;
+  text-decoration: none;
+  color: #222;
+  font-size: 0.9rem;
+}
+.btn-link:hover {
+  background: #f0f0f0;
+}
+
+.video-embed {
+  width: 100%;
+  max-width: 640px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #000;
+}
