@@ -1,13 +1,119 @@
-body {
+/* index.css */
+/* Simple 3-pane layout, scrollable lists, and highlighting */
+
+body, html, #root {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  padding: 0;
+  height: 100%;
+  font-family: Arial, sans-serif;
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+.app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  background-color: #f0f0f0;
+  border-bottom: 1px solid #ccc;
+}
+
+.pane-container {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Shared pane styles */
+.pane {
+  flex: 1;
+  padding: 1rem;
+  border-right: 1px solid #ccc;
+  overflow-y: auto;
+}
+
+.pane:last-child {
+  border-right: none;
+}
+
+.left-pane ul,
+.right-pane ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.left-pane li,
+.right-pane li {
+  padding: 0.25rem 0.5rem;  /* tighter vertical padding */
+  margin: 0.1rem 0;         /* less margin between items */
+  cursor: pointer;
+  border-radius: 4px;
+  line-height: 1.2;         /* compress line spacing */
+}
+
+
+.left-pane li:hover,
+.right-pane li:hover {
+  background-color: #eee;
+}
+
+.selected {
+  background-color: #d0ebff;
+  font-weight: bold;
+}
+
+.middle-pane .content-box {
+  min-height: 200px;
+  border: 1px solid #ddd;
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+  background-color: #fafafa;
+}
+
+.nav-buttons {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.nav-buttons button {
+  padding: 0.4rem 0.8rem;
+  cursor: pointer;
+  border: 1px solid #888;
+  background-color: #fff;
+  border-radius: 4px;
+}
+
+.nav-buttons button:hover {
+  background-color: #eee;
+}
+
+.read-order {
+  margin-top: 1rem;
+  border-top: 1px solid #ccc;
+  padding-top: 0.5rem;
+}
+
+.read-order ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.read-order li {
+  font-size: 0.9rem;
+  margin: 0.2rem 0;
+}
+
+/* Semidisc container */
+.semidisc-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-top: 1rem;
 }
