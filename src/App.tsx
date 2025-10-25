@@ -34,14 +34,22 @@ function App() {
   };
 
   const isYouTube = (url: string) => /(?:youtube\.com|youtu\.be)/i.test(url);
+
+  // Extract ID from watch, youtu.be, embed, or shorts
   const youTubeId = (url: string) => {
-    // Handles https://www.youtube.com/watch?v=ID, youtu.be/ID, and embed forms
+    const u = withHttps(url);
     const m =
-      url.match(/[?&]v=([^&#]+)/) ||
-      url.match(/youtu\.be\/([^?&#/]+)/) ||
-      url.match(/youtube\.com\/embed\/([^?&#/]+)/);
+      u.match(/[?&]v=([^&#]+)/) ||                   // watch?v=ID
+      u.match(/youtu\.be\/([^?&#/]+)/) ||            // youtu.be/ID
+      u.match(/youtube\.com\/embed\/([^?&#/]+)/) ||  // /embed/ID
+      u.match(/youtube\.com\/shorts\/([^?&#/]+)/);   // /shorts/ID
     return m ? m[1] : "";
   };
+
+  // Build a robust embed src, including origin and sane params
+  const ytEmbedSrc = (id: string) =>
+    `https://www.youtube.com/embed/${id}?rel=0&modestbranding=1&playsinline=1&origin=${encodeURIComponent(window.location.origin)}`;
+
 
   // // Prevent pane 3 from always jumping to bottom; instead, keep latest entry visible if near bottom
   // useEffect(() => {
@@ -201,32 +209,65 @@ function App() {
                 </a>
               )}
 
-              {selectedConcept.video && (
-                isYouTube(selectedConcept.video) ? (
+              {selectedConcept.video && (() => {
+                const raw = withHttps(selectedConcept.video);
+                if (!isYouTube(raw)) {
+                  return (
+                    <a
+                      className="btn-link"
+                      href={raw}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Open Video"
+                    >
+                      🎬 Video
+                    </a>
+                  );
+                }
+                const id = youTubeId(raw);
+                if (!id) {
+                  // If we can’t parse an ID, just show a link
+                  return (
+                    <a
+                      className="btn-link"
+                      href={raw}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Open on YouTube"
+                    >
+                      ▶ Open on YouTube
+                    </a>
+                  );
+                }
+                return (
                   <div className="video-embed">
                     <iframe
-                      title="Video"
+                      title="YouTube"
                       width="100%"
                       height="280"
-                      src={`https://www.youtube.com/embed/${youTubeId(withHttps(selectedConcept.video))}`}
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      src={ytEmbedSrc(id)}
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                       allowFullScreen
+                      referrerPolicy="strict-origin-when-cross-origin"
                     />
+                    {/* Fallback link in case Shorts refuses to play in an embed */}
+                    <div style={{ padding: "0.25rem 0" }}>
+                      <a
+                        className="btn-link"
+                        href={`https://www.youtube.com/watch?v=${id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="Open on YouTube"
+                      >
+                        ↗ Open on YouTube
+                      </a>
+                    </div>
                   </div>
-                ) : (
-                  <a
-                    className="btn-link"
-                    href={withHttps(selectedConcept.video)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title="Open Video"
-                  >
-                    🎬 Video
-                  </a>
-                )
-              )}
+                );
+              })()}
             </div>
           )}
+
 
 
           <div className="content-box">{selectedConcept?.entire}</div>
