@@ -1,0 +1,15 @@
+{
+  "files": {
+    "main.css": "/FDKBook/static/css/main.9cd015b2.css",
+    "main.js": "/FDKBook/static/js/main.4f7068ac.js",
+    "static/js/453.2ca3cb58.chunk.js": "/FDKBook/static/js/453.2ca3cb58.chunk.js",
+    "index.html": "/FDKBook/index.html",
+    "main.9cd015b2.css.map": "/FDKBook/static/css/main.9cd015b2.css.map",
+    "main.4f7068ac.js.map": "/FDKBook/static/js/main.4f7068ac.js.map",
+    "453.2ca3cb58.chunk.js.map": "/FDKBook/static/js/453.2ca3cb58.chunk.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.9cd015b2.css",
+    "static/js/main.4f7068ac.js"
+  ]
+}
