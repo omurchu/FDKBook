@@ -1,9 +1,9 @@
 // App.tsx
 // Refactored to use only HTML elements + CSS for layout/styling.
 // No Chakra UI or external UI libraries.
-// Last updated: 2025-09-18 20:05 PDT
+// Last updated: 2025-09-18 20:05 PDT (extended to support strength;angle cells)
 
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef } from "react";
 import * as XLSX from "xlsx";
 
 interface Concept {
@@ -16,7 +16,8 @@ interface Concept {
 
 function App() {
   const [concepts, setConcepts] = useState<Concept[]>([]);
-  const [matrix, setMatrix] = useState<number[][]>([]);
+  const [angleMatrix, setAngleMatrix] = useState<number[][]>([]);  // Added angleMatrix state 0-180 degrees
+  const [strengthMatrix, setStrengthMatrix] = useState<number[][]>([]); // Added strengthMatrix state 0-5
   const [selectedConcept, setSelectedConcept] = useState<Concept | null>(null);
   const [history, setHistory] = useState<number[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
@@ -25,6 +26,102 @@ function App() {
 
   const historyEndRef = useRef<HTMLDivElement | null>(null);
 
+  // Auto-load default matrix file on startup
+  React.useEffect(() => {
+    const defaultPath = process.env.PUBLIC_URL + "/matrix_file/fdk_matrix.xlsx";
+
+    fetch(defaultPath)
+      .then((res) => res.arrayBuffer())
+      .then((buffer) => {
+        try {
+          const wb = XLSX.read(buffer, { type: "array" });
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          const data = XLSX.utils.sheet_to_json(ws, { header: 1 }) as string[][];
+
+          // ---- Load Concepts ----
+          const concepts: Concept[] = [];
+          for (let i = 2; i < 37; i++) {
+            const pdfRaw = trimOrEmpty(data[i][0]);
+            const videoRaw = trimOrEmpty(data[i][1]);
+            concepts.push({
+              id: Number(data[i][3]),
+              title: trimOrEmpty(data[i][4]),
+              entire: trimOrEmpty(data[i][2]),
+              pdf: pdfRaw,
+              video: videoRaw,
+            });
+          }
+
+          // ---- Build Angle + Strength Matrices ----
+          const angleMatrix: number[][] = [];
+          const strengthMatrix: number[][] = [];
+          let foundTuples = false;
+
+          for (let i = 2; i < 37; i++) {
+            const angleRow: number[] = [];
+            const strengthRow: number[] = [];
+
+            for (let j = 5; j < 40; j++) {
+              const raw = data[i][j];
+              let angleVal = 0;
+              let strengthVal = 0;
+
+              if (raw !== undefined && raw !== null && String(raw).trim() !== "") {
+                const s = String(raw).trim();
+
+                if (s.includes(";")) {
+                  const [strengthPart, anglePart] = s.split(";").map(v => v.trim());
+                  const parsedStrength = Number(strengthPart);
+                  const parsedAngle = Number(anglePart);
+
+                  if (!Number.isNaN(parsedStrength) || !Number.isNaN(parsedAngle)) {
+                    foundTuples = true;
+                  }
+
+                  strengthVal = Number.isNaN(parsedStrength) ? 0 : parsedStrength;
+                  angleVal = Number.isNaN(parsedAngle) ? 0 : parsedAngle;
+
+                } else {
+                  // Legacy angle-only format
+                  const num = Number(s);
+                  if (!Number.isNaN(num)) {
+                    angleVal = num;
+                    strengthVal = 0;
+                  }
+                }
+              }
+
+              angleRow.push(angleVal);
+              strengthRow.push(strengthVal);
+            }
+
+            angleMatrix.push(angleRow);
+            strengthMatrix.push(strengthRow);
+          }
+
+          console.log(foundTuples
+            ? "Auto-load: Detected tuple format 'strength; angle'"
+            : "Auto-load: Using legacy angle-only format"
+          );
+
+          // ---- Push to State ----
+          setConcepts(concepts);
+          setAngleMatrix(angleMatrix);
+          setStrengthMatrix(strengthMatrix);
+
+          setSelectedConcept(concepts[0]);
+          setHistory([concepts[0].id]);
+          setHistoryIndex(0);
+
+          setFileName("Default: fdk_matrix.xlsx");
+        } catch (err) {
+          console.error("Failed to auto-load default Excel file:", err);
+        }
+      })
+      .catch(() => console.log("Default matrix file not found."));
+  }, []);
+
+  
   const trimOrEmpty = (v: any) => (typeof v === "string" ? v.trim() : (v ?? ""));
 
   const withHttps = (url: string) => {
@@ -39,24 +136,18 @@ function App() {
   const youTubeId = (url: string) => {
     const u = withHttps(url);
     const m =
-      u.match(/[?&]v=([^&#]+)/) ||                   // watch?v=ID
-      u.match(/youtu\.be\/([^?&#/]+)/) ||            // youtu.be/ID
-      u.match(/youtube\.com\/embed\/([^?&#/]+)/) ||  // /embed/ID
-      u.match(/youtube\.com\/shorts\/([^?&#/]+)/);   // /shorts/ID
+      u.match(/[?&]v=([^&#]+)/) || // watch?v=ID
+      u.match(/youtu\.be\/([^?&#/]+)/) || // youtu.be/ID
+      u.match(/youtube\.com\/embed\/([^?&#/]+)/) || // /embed/ID
+      u.match(/youtube\.com\/shorts\/([^?&#/]+)/); // /shorts/ID
     return m ? m[1] : "";
   };
 
   // Build a robust embed src, including origin and sane params
   const ytEmbedSrc = (id: string) =>
-    `https://www.youtube.com/embed/${id}?rel=0&modestbranding=1&playsinline=1&origin=${encodeURIComponent(window.location.origin)}`;
-
-
-  // // Prevent pane 3 from always jumping to bottom; instead, keep latest entry visible if near bottom
-  // useEffect(() => {
-  //   if (historyEndRef.current) {
-  //     historyEndRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  //   }
-  // }, [history]);
+    `https://www.youtube.com/embed/${id}?rel=0&modestbranding=1&playsinline=1&origin=${encodeURIComponent(
+      window.location.origin
+    )}`;
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -85,17 +176,63 @@ function App() {
         });
       }
 
-      const matrix: number[][] = [];
+      const angleMatrix: number[][] = [];
+      const strengthMatrix: number[][] = [];
+      let foundTuples = false;
+
       for (let i = 2; i < 37; i++) {
-        const row: number[] = [];
+        const angleRow: number[] = [];
+        const strengthRow: number[] = [];
+
         for (let j = 5; j < 40; j++) {
-          row.push(Number(data[i][j]) || 0);
+          const raw = data[i][j];
+          let angleVal = 0;
+          let strengthVal = 0;
+
+          if (raw !== undefined && raw !== null && String(raw).trim() !== "") {
+            const s = String(raw).trim();
+
+            if (s.includes(";")) {
+              // New format: "strength; angle"
+              const parts = s.split(";");
+              const strengthPart = parts[0]?.trim() ?? "";
+              const anglePart = parts[1]?.trim() ?? "";
+              const parsedStrength = Number(strengthPart);
+              const parsedAngle = Number(anglePart);
+
+              if (!Number.isNaN(parsedStrength) || !Number.isNaN(parsedAngle)) {
+                foundTuples = true;
+              }
+
+              strengthVal = Number.isNaN(parsedStrength) ? 0 : parsedStrength;
+              angleVal = Number.isNaN(parsedAngle) ? 0 : parsedAngle;
+            } else {
+              // Legacy format: just an angle number
+              const num = Number(s);
+              if (!Number.isNaN(num)) {
+                angleVal = num;
+                strengthVal = 0;
+              }
+            }
+          }
+
+          angleRow.push(angleVal);
+          strengthRow.push(strengthVal);
         }
-        matrix.push(row);
+
+        angleMatrix.push(angleRow);
+        strengthMatrix.push(strengthRow);
+      }
+
+      if (foundTuples) {
+        console.log("Detected tuple format 'strength; angle' in matrix cells.");
+      } else {
+        console.log("Using legacy angle-only matrix format.");
       }
 
       setConcepts(concepts);
-      setMatrix(matrix);
+      setAngleMatrix(angleMatrix);
+      setStrengthMatrix(strengthMatrix);
       setSelectedConcept(concepts[0]);
       setHistory([concepts[0].id]);
       setHistoryIndex(0);
@@ -127,19 +264,44 @@ function App() {
     }
   };
 
-  const relatedConcepts = selectedConcept
-    ? concepts
-        .map((c, idx) => ({
-          concept: c,
-          strength: matrix[selectedConcept.id - 1][idx],
-        }))
-        .filter((rel) => rel.strength > 0)
-        .sort((a, b) => a.strength - b.strength)
-    : [];
+  const relatedConcepts =
+    selectedConcept && angleMatrix[selectedConcept.id - 1]
+      ? concepts
+          .map((c, idx) => ({
+            concept: c,
+            angle: angleMatrix[selectedConcept.id - 1]?.[idx] ?? 0,
+            strength: strengthMatrix[selectedConcept.id - 1]?.[idx] ?? 0,
+          }))
+          .filter((rel) => rel.angle > 0)
+          .sort((a, b) => a.angle - b.angle)
+      : [];
 
-  const getRelationColor = (strength: number) => {
-    if (strength <= 59) return "#add8e6";
-    if (strength <= 119) return "#90ee90";
+   // Next in Story: up to two strongest connections by strength
+  const nextStoryConcepts =
+    selectedConcept && strengthMatrix[selectedConcept.id - 1]
+      ? concepts
+          .map((c, idx) => ({
+            concept: c,
+            angle: angleMatrix[selectedConcept.id - 1]?.[idx] ?? 0,
+            strength: strengthMatrix[selectedConcept.id - 1]?.[idx] ?? 0,
+          }))
+          .filter(
+            (rel) =>
+              rel.concept.id !== selectedConcept.id && // ignore self
+              rel.strength > 0 // only non-zero strength
+          )
+          .sort((a, b) => {
+            // primary: strength DESC
+            if (b.strength !== a.strength) return b.strength - a.strength;
+            // tie-breaker: smaller angle first
+            return a.angle - b.angle;
+          })
+          .slice(0, 2)
+      : [];
+
+  const getRelationColor = (angle: number) => {
+    if (angle <= 59) return "#add8e6";
+    if (angle <= 119) return "#90ee90";
     return "#ffb6c1";
   };
 
@@ -183,12 +345,18 @@ function App() {
             {concepts.map((c) => (
               <li
                 key={c.id}
-                className={selectedConcept?.id === c.id ? "selected" : ""}
+                className={
+                  selectedConcept?.id === c.id
+                    ? "selected"
+                    : history.includes(c.id)
+                    ? "visited"
+                    : ""
+                }
                 onClick={() => handleSelectConcept(c)}
               >
                 {c.title}
               </li>
-            ))}
+            ))} 
           </ul>
         </div>
 
@@ -209,66 +377,65 @@ function App() {
                 </a>
               )}
 
-              {selectedConcept.video && (() => {
-                const raw = withHttps(selectedConcept.video);
-                if (!isYouTube(raw)) {
-                  return (
-                    <a
-                      className="btn-link"
-                      href={raw}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title="Open Video"
-                    >
-                      🎬 Video
-                    </a>
-                  );
-                }
-                const id = youTubeId(raw);
-                if (!id) {
-                  // If we can’t parse an ID, just show a link
-                  return (
-                    <a
-                      className="btn-link"
-                      href={raw}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title="Open on YouTube"
-                    >
-                      ▶ Open on YouTube
-                    </a>
-                  );
-                }
-                return (
-                  <div className="video-embed">
-                    <iframe
-                      title="YouTube"
-                      width="100%"
-                      height="280"
-                      src={ytEmbedSrc(id)}
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                      allowFullScreen
-                      referrerPolicy="strict-origin-when-cross-origin"
-                    />
-                    {/* Fallback link in case Shorts refuses to play in an embed */}
-                    <div style={{ padding: "0.25rem 0" }}>
+              {selectedConcept.video &&
+                (() => {
+                  const raw = withHttps(selectedConcept.video);
+                  if (!isYouTube(raw)) {
+                    return (
                       <a
                         className="btn-link"
-                        href={`https://www.youtube.com/watch?v=${id}`}
+                        href={raw}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="Open Video"
+                      >
+                        🎬 Video
+                      </a>
+                    );
+                  }
+                  const id = youTubeId(raw);
+                  if (!id) {
+                    // If we can’t parse an ID, just show a link
+                    return (
+                      <a
+                        className="btn-link"
+                        href={raw}
                         target="_blank"
                         rel="noopener noreferrer"
                         title="Open on YouTube"
                       >
-                        ↗ Open on YouTube
+                        ▶ Open on YouTube
                       </a>
+                    );
+                  }
+                  return (
+                    <div className="video-embed">
+                      <iframe
+                        title="YouTube"
+                        width="100%"
+                        height="280"
+                        src={ytEmbedSrc(id)}
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                        allowFullScreen
+                        referrerPolicy="strict-origin-when-cross-origin"
+                      />
+                      {/* Fallback link in case Shorts refuses to play in an embed */}
+                      <div style={{ padding: "0.25rem 0" }}>
+                        <a
+                          className="btn-link"
+                          href={`https://www.youtube.com/watch?v=${id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="Open on YouTube"
+                        >
+                          ↗ Open on YouTube
+                        </a>
+                      </div>
                     </div>
-                  </div>
-                );
-              })()}
+                  );
+                })()}
             </div>
           )}
-
-
 
           <div className="content-box">{selectedConcept?.entire}</div>
           <div className="nav-buttons">
@@ -283,23 +450,46 @@ function App() {
 
         {/* Right Pane */}
         <div className="pane right-pane">
+          <div className="next-story-section">
+            <h3>Next in Story!</h3>
+            {nextStoryConcepts.length === 0 ? (
+              <p className="next-story-empty">No strong suggestions yet.</p>
+            ) : (
+              <ul className="next-story-list">
+                {nextStoryConcepts.map((rel, idx) => (
+                  <li
+                    key={idx}
+                    className="next-story-item"
+                    onClick={() => handleSelectConcept(rel.concept)}
+                  >
+                    {rel.concept.title}{" "}
+                    <span className="next-story-meta">
+                      (strength {rel.strength}, angle {rel.angle})
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
           <h3>Related Concepts</h3>
           <ul>
             {relatedConcepts.map((rel, idx) => (
               <li
                 key={idx}
                 style={{
-                  backgroundColor: getRelationColor(rel.strength),
+                  backgroundColor: getRelationColor(rel.angle),
                   padding: "0.25rem 0.5rem",
                   margin: "0.1rem 0",
                   lineHeight: "1.2",
                 }}
                 onClick={() => handleSelectConcept(rel.concept)}
               >
-                {rel.concept.title} ({rel.strength})
+                {rel.concept.title} ({rel.angle})
               </li>
             ))}
           </ul>
+
 
           {showTriangles && (
             <div className="semidisc-container">
@@ -310,10 +500,10 @@ function App() {
                 <circle cx="10" cy="150" r="5" fill="darkblue" stroke="black" />
 
                 {relatedConcepts.map((rel, idx) => {
-                  const pos = polarToCartesian(rel.strength, 135);
+                  const pos = polarToCartesian(rel.angle, 135);
                   let yOffset = 0;
                   for (let j = 0; j < idx; j++) {
-                    if (Math.abs(rel.strength - relatedConcepts[j].strength) < 15) {
+                    if (Math.abs(rel.angle - relatedConcepts[j].angle) < 15) {
                       yOffset += 12;
                     }
                   }
@@ -331,7 +521,7 @@ function App() {
                         cx={pos.x}
                         cy={pos.y}
                         r="5"
-                        fill={getRelationColor(rel.strength)}
+                        fill={getRelationColor(rel.angle)}
                         stroke="black"
                       />
                       <text x={pos.x + 5} y={pos.y + yOffset} fontSize="13" fill="black">

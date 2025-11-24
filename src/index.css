@@ -68,6 +68,12 @@ body, html, #root {
   font-weight: bold;
 }
 
+/* New style for visited items */
+.visited {
+  background-color: #e6f3ff;   /* light blue, softer than .selected */
+  font-weight: normal;
+}
+
 .middle-pane .content-box {
   min-height: 200px;
   border: 1px solid #ddd;
@@ -75,6 +81,37 @@ body, html, #root {
   margin-bottom: 1rem;
   background-color: #fafafa;
 }
+
+
+/* Styled Choose File button */
+.file-button {
+  display: inline-block;
+  padding: 0.35rem 0.75rem;
+  background-color: #ffffff;
+  color: #333;
+  border: 1px solid #888;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.file-button:hover {
+  background-color: #e6e6e6;
+}
+
+.file-button:active {
+  background-color: #dcdcdc;
+  box-shadow: inset 0 0 3px rgba(0,0,0,0.3);
+}
+
+/* File name next to the button */
+.app-header span {
+  font-size: 0.9rem;
+  color: #444;
+}
+
 
 .nav-buttons {
   display: flex;
@@ -147,4 +184,46 @@ body, html, #root {
   border-radius: 6px;
   overflow: hidden;
   background: #000;
+}
+
+.next-story-section {
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #ccc;
+}
+
+.next-story-section h3 {
+  margin-top: 0;
+  margin-bottom: 0.35rem;
+}
+
+.next-story-empty {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #777;
+}
+
+.next-story-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.next-story-item {
+  padding: 0.25rem 0.5rem;
+  margin: 0.1rem 0;
+  border-radius: 4px;
+  cursor: pointer;
+  background-color: #fff8c6;   /* soft pastel yellow */
+  border: 1px solid #e6d98a;   /* muted gold edge */
+  font-size: 0.9rem;
+}
+
+.next-story-item:hover {
+  background-color: #fff3a6;   /* slightly brighter yellow on hover */
+}
+
+.next-story-meta {
+  font-size: 0.8rem;
+  color: #555;
 }
