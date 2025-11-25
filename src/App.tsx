@@ -1,7 +1,7 @@
 // App.tsx
 // Refactored to use only HTML elements + CSS for layout/styling.
 // No Chakra UI or external UI libraries.
-// Last updated: 2025-09-18 20:05 PDT (extended to support strength;angle cells)
+// Last updated: 2025-11-24 20:05 PDT (extended to support strength;angle cells)
 
 import React, { useState, useRef } from "react";
 import * as XLSX from "xlsx";
@@ -273,7 +273,7 @@ function App() {
             strength: strengthMatrix[selectedConcept.id - 1]?.[idx] ?? 0,
           }))
           .filter((rel) => rel.angle > 0)
-          .sort((a, b) => a.angle - b.angle)
+          .sort((a, b) => b.angle - a.angle)
       : [];
 
    // Next in Story: up to two strongest connections by strength
@@ -305,13 +305,33 @@ function App() {
     return "#ffb6c1";
   };
 
+  // const polarToCartesian = (angleDeg: number, radius: number) => {
+  //   const angleRad = (Math.PI / 180) * angleDeg;
+  //   return {
+  //     x: 10 + radius * Math.sin(angleRad),
+  //     y: 150 - radius * Math.cos(angleRad),
+  //   };
+  // };
+
   const polarToCartesian = (angleDeg: number, radius: number) => {
-    const angleRad = (Math.PI / 180) * angleDeg;
+    // Flip semantic angle so 0° is at the bottom and 180° at the top
+    const flipped = 180 - angleDeg;
+    const angleRad = (Math.PI / 180) * flipped;
+
     return {
       x: 10 + radius * Math.sin(angleRad),
       y: 150 - radius * Math.cos(angleRad),
     };
   };
+
+    // Create a wedge path from angleStart→angleEnd at a given radius
+  // const arcPath = (startDeg: number, endDeg: number, radius: number) => {
+  //   const start = polarToCartesian(startDeg, radius);
+  //   const end = polarToCartesian(endDeg, radius);
+  //   return `M10,150 L${start.x},${start.y} A${radius},${radius} 0 0,1 ${end.x},${end.y} Z`;
+  // };
+
+  const g_radius = 150; // global radius for dial points
 
   return (
     <div className="app-container">
@@ -493,14 +513,20 @@ function App() {
 
           {showTriangles && (
             <div className="semidisc-container">
-              <svg width="330" height="330" viewBox="0 0 330 330">
-                <path d="M10,150 L10,0 A150,150 0 0,1 152,73 Z" fill="#add8e6" />
+              <svg
+                className="semidisc-svg"
+                width="330"
+                height="330"
+                viewBox="0 0 330 330"
+              >
+                <path d="M10,150 L10,0 A150,150 0 0,1 152,73 Z" fill="#ffb6c1" />
                 <path d="M10,150 L152,73 A150,150 0 0,1 154,226 Z" fill="#90ee90" />
-                <path d="M10,150 L154,226 A150,150 0 0,1 10,300 Z" fill="#ffb6c1" />
+                <path d="M10,150 L154,226 A150,150 0 0,1 10,300 Z" fill="#add8e6" />
+
                 <circle cx="10" cy="150" r="5" fill="darkblue" stroke="black" />
 
                 {relatedConcepts.map((rel, idx) => {
-                  const pos = polarToCartesian(rel.angle, 135);
+                  const pos = polarToCartesian(rel.angle, g_radius-10);
                   let yOffset = 0;
                   for (let j = 0; j < idx; j++) {
                     if (Math.abs(rel.angle - relatedConcepts[j].angle) < 15) {
@@ -534,8 +560,9 @@ function App() {
             </div>
           )}
 
+
           <div className="read-order">
-            <h3>Read Order</h3>
+            <h3>Reading History</h3>
             <ul>
               {history.map((id, idx) => {
                 const c = concepts.find((c) => c.id === id);

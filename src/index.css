@@ -130,6 +130,18 @@ body, html, #root {
   background-color: #eee;
 }
 
+
+/* Make the right pane a column flexbox */
+.pane.right-pane {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Read Order gets pushed to the bottom of the pane */
+.pane.right-pane > .read-order {
+  margin-top: auto;
+}
+
 .read-order {
   margin-top: 1rem;
   border-top: 1px solid #ccc;
@@ -147,13 +159,20 @@ body, html, #root {
   margin: 0.2rem 0;
 }
 
-/* Semidisc container */
 .semidisc-container {
   display: flex;
   justify-content: center;
-  align-items: center;
-  margin-top: 1rem;
+  align-items: flex-start;
+  margin-top: 0.25rem;      /* small gap under Related Concepts */
+  margin-bottom: 0.75rem;   /* small gap above Read Order */
 }
+
+/* Lift the dial upward inside its container */
+.semidisc-svg {
+  margin-top: 20px;  /* tweak this value as needed: -60, -80, -100, etc. */
+  margin-left: -40px;
+}
+
 /* handle video and resource links */
 .resource-row {
   display: flex;
@@ -227,3 +246,13 @@ body, html, #root {
   font-size: 0.8rem;
   color: #555;
 }
+
+/* Debug helpers – use temporarily 
+.semidisc-container {
+  border: 1px dashed red;
+}
+
+.read-order {
+  border: 1px dashed blue;
+}
+End debug helpers */
