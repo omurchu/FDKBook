@@ -1,15 +1,15 @@
 {
   "files": {
     "main.css": "/FDKBook/static/css/main.ee669dd4.css",
-    "main.js": "/FDKBook/static/js/main.d20cc9c9.js",
+    "main.js": "/FDKBook/static/js/main.e8097e04.js",
     "static/js/453.2ca3cb58.chunk.js": "/FDKBook/static/js/453.2ca3cb58.chunk.js",
     "index.html": "/FDKBook/index.html",
     "main.ee669dd4.css.map": "/FDKBook/static/css/main.ee669dd4.css.map",
-    "main.d20cc9c9.js.map": "/FDKBook/static/js/main.d20cc9c9.js.map",
+    "main.e8097e04.js.map": "/FDKBook/static/js/main.e8097e04.js.map",
     "453.2ca3cb58.chunk.js.map": "/FDKBook/static/js/453.2ca3cb58.chunk.js.map"
   },
   "entrypoints": [
     "static/css/main.ee669dd4.css",
-    "static/js/main.d20cc9c9.js"
+    "static/js/main.e8097e04.js"
   ]
 }
