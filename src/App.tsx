@@ -11,7 +11,9 @@ interface Concept {
   title: string;
   entire: string;
   pdf: string;
-  video: string;
+  video: string;       // legacy single video field
+  shortVideo?: string; // new
+  longVideo?: string;  // new
 }
 
 function App() {
@@ -26,7 +28,217 @@ function App() {
 
   const historyEndRef = useRef<HTMLDivElement | null>(null);
 
+  type ParsedSheet = {
+    concepts: Concept[];
+    angleMatrix: number[][];
+    strengthMatrix: number[][];
+    foundTuples: boolean;
+    n: number;
+  };
+
+  const norm = (v: any) => String(v ?? "").trim().toLowerCase();
+
+  const isNumericLike = (v: any) => {
+    const s = String(v ?? "").trim();
+    if (!s) return false;
+    // allow "3; 90" tuple or "90"
+    if (s.includes(";")) {
+      const parts = s.split(";").map(p => p.trim());
+      return parts.length >= 2 && parts.every(p => p === "" ? false : !Number.isNaN(Number(p)));
+    }
+    return !Number.isNaN(Number(s));
+  };
+
+  const parseCellToStrengthAngle = (raw: any) => {
+    let angleVal = 0;
+    let strengthVal = 0;
+    let foundTuple = false;
+
+    if (raw !== undefined && raw !== null && String(raw).trim() !== "") {
+      const s = String(raw).trim();
+
+      if (s.includes(";")) {
+        const [strengthPart, anglePart] = s.split(";").map(v => v.trim());
+        const parsedStrength = Number(strengthPart);
+        const parsedAngle = Number(anglePart);
+
+        if (!Number.isNaN(parsedStrength) || !Number.isNaN(parsedAngle)) {
+          foundTuple = true;
+        }
+
+        strengthVal = Number.isNaN(parsedStrength) ? 0 : parsedStrength;
+        angleVal = Number.isNaN(parsedAngle) ? 0 : parsedAngle;
+      } else {
+        // Legacy format: angle only
+        const num = Number(s);
+        if (!Number.isNaN(num)) {
+          angleVal = num;
+          strengthVal = 0;
+        }
+      }
+    }
+
+    return { angleVal, strengthVal, foundTuple };
+  };
+
+  const parseSheet = (data: any[][]): ParsedSheet => {
+    // 1) Find header row (first ~20 rows)
+    let headerRowIdx = -1;
+    for (let r = 0; r < Math.min(20, data.length); r++) {
+      const row = data[r] ?? [];
+      const rowNorm = row.map(norm);
+      // look for any row that contains "id" and "title"
+      if (rowNorm.includes("id") && rowNorm.includes("title")) {
+        headerRowIdx = r;
+        break;
+      }
+    }
+    if (headerRowIdx < 0) {
+      throw new Error("Could not find a header row containing 'ID' and 'Title'.");
+    }
+
+    const header = data[headerRowIdx] ?? [];
+
+    // 2) Column indices for concept fields (support old+new)
+    const colIndexOf = (label: string) => header.findIndex((c: any) => norm(c) === label);
+
+    const idCol = colIndexOf("id");
+    const titleCol = colIndexOf("title");
+
+    // new format uses "Entry Text"; old uses "Entire"
+    let textCol = colIndexOf("entry text");
+    if (textCol < 0) textCol = colIndexOf("entire");
+
+    // keep pdf/video in Concept even if absent in new sheets
+    const pdfCol = colIndexOf("pdf link");
+    const videoCol = colIndexOf("video link");   // legacy single video column
+    const shortVideoCol = colIndexOf("short video");
+    const longVideoCol = colIndexOf("long video");
+
+    if (idCol < 0 || titleCol < 0 || textCol < 0) {
+      throw new Error("Missing one of required columns: ID, Title, and Entry Text/Entire.");
+    }
+
+    // 3) Find matrix start column: first numeric header cell (e.g., "1")
+    let matrixStartCol = -1;
+    for (let c = 0; c < header.length; c++) {
+      const v = header[c];
+      const s = String(v ?? "").trim();
+      if (s !== "" && !Number.isNaN(Number(s))) {
+        matrixStartCol = c;
+        break;
+      }
+    }
+    if (matrixStartCol < 0) {
+      throw new Error("Could not find matrix column headers (numeric IDs) in the header row.");
+    }
+
+    // Determine N based on consecutive numeric headers
+    const matrixHeaderIds: number[] = [];
+    for (let c = matrixStartCol; c < header.length; c++) {
+      const s = String(header[c] ?? "").trim();
+      if (s === "" || Number.isNaN(Number(s))) break;
+      matrixHeaderIds.push(Number(s));
+    }
+    const n = matrixHeaderIds.length;
+    if (n <= 0) throw new Error("Matrix appears to have zero columns.");
+
+    // 4) Determine old vs new layout:
+    // Old: row after header contains transposed titles in the matrix region (mostly non-numeric strings)
+    // New: row after header immediately contains matrix values (numeric/tuple/blank)
+    const rowAfterHeader = data[headerRowIdx + 1] ?? [];
+    let nonNumericCount = 0;
+    let sampleCount = 0;
+    for (let c = matrixStartCol; c < matrixStartCol + Math.min(n, 20); c++) {
+      const cell = rowAfterHeader[c];
+      const s = String(cell ?? "").trim();
+      if (s === "") continue;
+      sampleCount++;
+      if (!isNumericLike(cell)) nonNumericCount++;
+    }
+    const looksLikeTitleRow = sampleCount > 0 && nonNumericCount / sampleCount > 0.6;
+
+    // If old: matrix starts one row later (skip title row)
+    const matrixRowStart = looksLikeTitleRow ? headerRowIdx + 2 : headerRowIdx + 1;
+    const conceptRowStart = headerRowIdx + 1; // concept rows start immediately after header in both formats
+
+    // 5) Load concepts (first n concept rows)
+    const concepts: Concept[] = [];
+    for (let i = 0; i < n; i++) {
+      const row = data[conceptRowStart + i] ?? [];
+      const pdfRaw = pdfCol >= 0 ? trimOrEmpty(row[pdfCol]) : "";
+      const legacyVideoRaw = videoCol >= 0 ? trimOrEmpty(row[videoCol]) : "";
+      const shortVideoRaw = shortVideoCol >= 0 ? trimOrEmpty(row[shortVideoCol]) : "";
+      const longVideoRaw = longVideoCol >= 0 ? trimOrEmpty(row[longVideoCol]) : "";
+
+      // Prefer legacy video link if present; otherwise fall back to short, then long
+      const videoRaw = legacyVideoRaw || shortVideoRaw || longVideoRaw;
+
+      concepts.push({
+        id: Number(row[idCol]) || matrixHeaderIds[i] || (i + 1),
+        title: trimOrEmpty(row[titleCol]),
+        entire: trimOrEmpty(row[textCol]),
+        pdf: pdfRaw,
+        video: videoRaw,
+        shortVideo: shortVideoRaw,
+        longVideo: longVideoRaw,
+      });
+    }
+
+    // 6) Build angle + strength matrices (n x n)
+    const angleMatrix: number[][] = [];
+    const strengthMatrix: number[][] = [];
+    let foundTuples = false;
+
+    for (let i = 0; i < n; i++) {
+      const row = data[matrixRowStart + i] ?? [];
+      const aRow: number[] = [];
+      const sRow: number[] = [];
+
+      for (let j = 0; j < n; j++) {
+        const raw = row[matrixStartCol + j];
+        const parsed = parseCellToStrengthAngle(raw);
+        if (parsed.foundTuple) foundTuples = true;
+        aRow.push(parsed.angleVal);
+        sRow.push(parsed.strengthVal);
+      }
+
+      angleMatrix.push(aRow);
+      strengthMatrix.push(sRow);
+    }
+
+    return { concepts, angleMatrix, strengthMatrix, foundTuples, n };
+  };
+
+  const loadFromArrayBuffer = (buffer: ArrayBuffer, sourceLabel: string) => {
+    const wb = XLSX.read(buffer, { type: "array" });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json(ws, { header: 1 }) as any[][];
+
+    const parsed = parseSheet(data);
+
+    console.log(
+      `${sourceLabel}: loaded ${parsed.n} concepts; ` +
+      (parsed.foundTuples ? "detected tuple 'strength; angle' format" : "using legacy angle-only format")
+    );
+
+    setConcepts(parsed.concepts);
+    setAngleMatrix(parsed.angleMatrix);
+    setStrengthMatrix(parsed.strengthMatrix);
+
+    setSelectedConcept(parsed.concepts[0] ?? null);
+    if (parsed.concepts[0]) {
+      setHistory([parsed.concepts[0].id]);
+      setHistoryIndex(0);
+    } else {
+      setHistory([]);
+      setHistoryIndex(-1);
+    }
+  };
+
+
   // Auto-load default matrix file on startup
+   
   React.useEffect(() => {
     const defaultPath = process.env.PUBLIC_URL + "/matrix_file/fdk_matrix.xlsx";
 
@@ -34,85 +246,7 @@ function App() {
       .then((res) => res.arrayBuffer())
       .then((buffer) => {
         try {
-          const wb = XLSX.read(buffer, { type: "array" });
-          const ws = wb.Sheets[wb.SheetNames[0]];
-          const data = XLSX.utils.sheet_to_json(ws, { header: 1 }) as string[][];
-
-          // ---- Load Concepts ----
-          const concepts: Concept[] = [];
-          for (let i = 2; i < 37; i++) {
-            const pdfRaw = trimOrEmpty(data[i][0]);
-            const videoRaw = trimOrEmpty(data[i][1]);
-            concepts.push({
-              id: Number(data[i][3]),
-              title: trimOrEmpty(data[i][4]),
-              entire: trimOrEmpty(data[i][2]),
-              pdf: pdfRaw,
-              video: videoRaw,
-            });
-          }
-
-          // ---- Build Angle + Strength Matrices ----
-          const angleMatrix: number[][] = [];
-          const strengthMatrix: number[][] = [];
-          let foundTuples = false;
-
-          for (let i = 2; i < 37; i++) {
-            const angleRow: number[] = [];
-            const strengthRow: number[] = [];
-
-            for (let j = 5; j < 40; j++) {
-              const raw = data[i][j];
-              let angleVal = 0;
-              let strengthVal = 0;
-
-              if (raw !== undefined && raw !== null && String(raw).trim() !== "") {
-                const s = String(raw).trim();
-
-                if (s.includes(";")) {
-                  const [strengthPart, anglePart] = s.split(";").map(v => v.trim());
-                  const parsedStrength = Number(strengthPart);
-                  const parsedAngle = Number(anglePart);
-
-                  if (!Number.isNaN(parsedStrength) || !Number.isNaN(parsedAngle)) {
-                    foundTuples = true;
-                  }
-
-                  strengthVal = Number.isNaN(parsedStrength) ? 0 : parsedStrength;
-                  angleVal = Number.isNaN(parsedAngle) ? 0 : parsedAngle;
-
-                } else {
-                  // Legacy angle-only format
-                  const num = Number(s);
-                  if (!Number.isNaN(num)) {
-                    angleVal = num;
-                    strengthVal = 0;
-                  }
-                }
-              }
-
-              angleRow.push(angleVal);
-              strengthRow.push(strengthVal);
-            }
-
-            angleMatrix.push(angleRow);
-            strengthMatrix.push(strengthRow);
-          }
-
-          console.log(foundTuples
-            ? "Auto-load: Detected tuple format 'strength; angle'"
-            : "Auto-load: Using legacy angle-only format"
-          );
-
-          // ---- Push to State ----
-          setConcepts(concepts);
-          setAngleMatrix(angleMatrix);
-          setStrengthMatrix(strengthMatrix);
-
-          setSelectedConcept(concepts[0]);
-          setHistory([concepts[0].id]);
-          setHistoryIndex(0);
-
+          loadFromArrayBuffer(buffer, "Auto-load");
           setFileName("Default: fdk_matrix.xlsx");
         } catch (err) {
           console.error("Failed to auto-load default Excel file:", err);
@@ -149,96 +283,27 @@ function App() {
       window.location.origin
     )}`;
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+ const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
 
-    setFileName(file.name);
+  setFileName(file.name);
 
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      const buffer = evt.target?.result as ArrayBuffer;
-      if (!buffer) return;
-      const wb = XLSX.read(buffer, { type: "array" });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const data = XLSX.utils.sheet_to_json(ws, { header: 1 }) as string[][];
+  const reader = new FileReader();
+  reader.onload = (evt) => {
+    const buffer = evt.target?.result as ArrayBuffer;
+    if (!buffer) return;
 
-      const concepts: Concept[] = [];
-      for (let i = 2; i < 37; i++) {
-        const pdfRaw = trimOrEmpty(data[i][0]);
-        const videoRaw = trimOrEmpty(data[i][1]);
-        concepts.push({
-          id: Number(data[i][3]),
-          title: trimOrEmpty(data[i][4]),
-          entire: trimOrEmpty(data[i][2]),
-          pdf: pdfRaw,
-          video: videoRaw,
-        });
-      }
-
-      const angleMatrix: number[][] = [];
-      const strengthMatrix: number[][] = [];
-      let foundTuples = false;
-
-      for (let i = 2; i < 37; i++) {
-        const angleRow: number[] = [];
-        const strengthRow: number[] = [];
-
-        for (let j = 5; j < 40; j++) {
-          const raw = data[i][j];
-          let angleVal = 0;
-          let strengthVal = 0;
-
-          if (raw !== undefined && raw !== null && String(raw).trim() !== "") {
-            const s = String(raw).trim();
-
-            if (s.includes(";")) {
-              // New format: "strength; angle"
-              const parts = s.split(";");
-              const strengthPart = parts[0]?.trim() ?? "";
-              const anglePart = parts[1]?.trim() ?? "";
-              const parsedStrength = Number(strengthPart);
-              const parsedAngle = Number(anglePart);
-
-              if (!Number.isNaN(parsedStrength) || !Number.isNaN(parsedAngle)) {
-                foundTuples = true;
-              }
-
-              strengthVal = Number.isNaN(parsedStrength) ? 0 : parsedStrength;
-              angleVal = Number.isNaN(parsedAngle) ? 0 : parsedAngle;
-            } else {
-              // Legacy format: just an angle number
-              const num = Number(s);
-              if (!Number.isNaN(num)) {
-                angleVal = num;
-                strengthVal = 0;
-              }
-            }
-          }
-
-          angleRow.push(angleVal);
-          strengthRow.push(strengthVal);
-        }
-
-        angleMatrix.push(angleRow);
-        strengthMatrix.push(strengthRow);
-      }
-
-      if (foundTuples) {
-        console.log("Detected tuple format 'strength; angle' in matrix cells.");
-      } else {
-        console.log("Using legacy angle-only matrix format.");
-      }
-
-      setConcepts(concepts);
-      setAngleMatrix(angleMatrix);
-      setStrengthMatrix(strengthMatrix);
-      setSelectedConcept(concepts[0]);
-      setHistory([concepts[0].id]);
-      setHistoryIndex(0);
-    };
-    reader.readAsArrayBuffer(file);
+    try {
+      loadFromArrayBuffer(buffer, "User upload");
+    } catch (err) {
+      console.error("Failed to parse uploaded Excel file:", err);
+    }
   };
+
+  reader.readAsArrayBuffer(file);
+};
+
 
   const handleSelectConcept = (concept: Concept) => {
     setSelectedConcept(concept);
