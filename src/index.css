@@ -137,11 +137,6 @@ body, html, #root {
   flex-direction: column;
 }
 
-/* Read Order gets pushed to the bottom of the pane */
-.pane.right-pane > .read-order {
-  margin-top: auto;
-}
-
 .read-order {
   margin-top: 1rem;
   border-top: 1px solid #ccc;
@@ -245,6 +240,36 @@ body, html, #root {
 .next-story-meta {
   font-size: 0.8rem;
   color: #555;
+}
+
+.leap-section {
+  margin-top: 0.5rem;
+}
+
+.leap-section p {
+  margin: 0 0 0.25rem 0;
+  font-size: 0.8rem;
+  color: #666;
+}
+
+.leap-button {
+  padding: 0.3rem 0.65rem;
+  border: 1px solid #e6d98a;
+  border-radius: 4px;
+  background-color: #fff8c6;
+  color: #222;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.leap-button:hover:not(:disabled) {
+  background-color: #fff3a6;
+}
+
+.leap-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 /* Debug helpers – use temporarily 

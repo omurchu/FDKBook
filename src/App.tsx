@@ -24,9 +24,11 @@ function App() {
   const [history, setHistory] = useState<number[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const [showTriangles, setShowTriangles] = useState<boolean>(false);
+  const [showRelatedConcepts, setShowRelatedConcepts] = useState<boolean>(false);
   const [fileName, setFileName] = useState<string>("No file chosen");
 
   const historyEndRef = useRef<HTMLDivElement | null>(null);
+  const tocItemRefs = useRef<Record<number, HTMLLIElement | null>>({});
 
   type ParsedSheet = {
     concepts: Concept[];
@@ -255,6 +257,15 @@ function App() {
       .catch(() => console.log("Default matrix file not found."));
   }, []);
 
+  React.useEffect(() => {
+    if (!selectedConcept) return;
+
+    tocItemRefs.current[selectedConcept.id]?.scrollIntoView({
+      block: "center",
+      behavior: "smooth",
+    });
+  }, [selectedConcept]);
+
   
   const trimOrEmpty = (v: any) => (typeof v === "string" ? v.trim() : (v ?? ""));
 
@@ -329,6 +340,13 @@ function App() {
     }
   };
 
+  const handleSelectHistoryItem = (id: number) => {
+    const concept = concepts.find((c) => c.id === id);
+    if (!concept) return;
+
+    handleSelectConcept(concept);
+  };
+
   const relatedConcepts =
     selectedConcept && angleMatrix[selectedConcept.id - 1]
       ? concepts
@@ -340,6 +358,9 @@ function App() {
           .filter((rel) => rel.angle > 0)
           .sort((a, b) => b.angle - a.angle)
       : [];
+
+  const seenConceptIds = new Set(history);
+  const unseenConcepts = concepts.filter((concept) => !seenConceptIds.has(concept.id));
 
    // Next in Story: up to two strongest connections by strength
   const nextStoryConcepts =
@@ -353,6 +374,7 @@ function App() {
           .filter(
             (rel) =>
               rel.concept.id !== selectedConcept.id && // ignore self
+              !seenConceptIds.has(rel.concept.id) && // only concepts not yet seen this session
               rel.strength > 0 // only non-zero strength
           )
           .sort((a, b) => {
@@ -363,6 +385,13 @@ function App() {
           })
           .slice(0, 2)
       : [];
+
+  const handleLeapIntoUnknown = () => {
+    if (unseenConcepts.length === 0) return;
+
+    const randomIndex = Math.floor(Math.random() * unseenConcepts.length);
+    handleSelectConcept(unseenConcepts[randomIndex]);
+  };
 
   const getRelationColor = (angle: number) => {
     if (angle <= 59) return "#add8e6";
@@ -397,6 +426,9 @@ function App() {
   // };
 
   const g_radius = 150; // global radius for dial points
+  const displayedHistory = history
+    .map((id, index) => ({ id, index }))
+    .reverse();
 
   return (
     <div className="app-container">
@@ -420,6 +452,14 @@ function App() {
           />
           Show Triangles
         </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={showRelatedConcepts}
+            onChange={(e) => setShowRelatedConcepts(e.target.checked)}
+          />
+          Show Related Concepts
+        </label>
       </header>
 
       <div className="pane-container">
@@ -430,6 +470,9 @@ function App() {
             {concepts.map((c) => (
               <li
                 key={c.id}
+                ref={(el) => {
+                  tocItemRefs.current[c.id] = el;
+                }}
                 className={
                   selectedConcept?.id === c.id
                     ? "selected"
@@ -538,7 +581,9 @@ function App() {
           <div className="next-story-section">
             <h3>Next in Story!</h3>
             {nextStoryConcepts.length === 0 ? (
-              <p className="next-story-empty">No strong suggestions yet.</p>
+              <p className="next-story-empty">
+                There are no new concepts from here that you have not already seen.
+              </p>
             ) : (
               <ul className="next-story-list">
                 {nextStoryConcepts.map((rel, idx) => (
@@ -555,25 +600,40 @@ function App() {
                 ))}
               </ul>
             )}
+
+            <div className="leap-section">
+              <p>Don't like our suggestions?</p>
+              <button
+                className="leap-button"
+                onClick={handleLeapIntoUnknown}
+                disabled={unseenConcepts.length === 0}
+              >
+                Leap into the unknown!
+              </button>
+            </div>
           </div>
 
-          <h3>Related Concepts</h3>
-          <ul>
-            {relatedConcepts.map((rel, idx) => (
-              <li
-                key={idx}
-                style={{
-                  backgroundColor: getRelationColor(rel.angle),
-                  padding: "0.25rem 0.5rem",
-                  margin: "0.1rem 0",
-                  lineHeight: "1.2",
-                }}
-                onClick={() => handleSelectConcept(rel.concept)}
-              >
-                {rel.concept.title} ({rel.angle})
-              </li>
-            ))}
-          </ul>
+          {showRelatedConcepts && (
+            <div className="related-concepts-section">
+              <h3>Related Concepts</h3>
+              <ul>
+                {relatedConcepts.map((rel, idx) => (
+                  <li
+                    key={idx}
+                    style={{
+                      backgroundColor: getRelationColor(rel.angle),
+                      padding: "0.25rem 0.5rem",
+                      margin: "0.1rem 0",
+                      lineHeight: "1.2",
+                    }}
+                    onClick={() => handleSelectConcept(rel.concept)}
+                  >
+                    {rel.concept.title} ({rel.angle})
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
 
           {showTriangles && (
@@ -629,10 +689,14 @@ function App() {
           <div className="read-order">
             <h3>Reading History</h3>
             <ul>
-              {history.map((id, idx) => {
+              {displayedHistory.map(({ id, index }) => {
                 const c = concepts.find((c) => c.id === id);
                 return (
-                  <li key={idx} className={selectedConcept?.id === id ? "selected" : ""}>
+                  <li
+                    key={index}
+                    className={selectedConcept?.id === id ? "selected" : ""}
+                    onClick={() => handleSelectHistoryItem(id)}
+                  >
                     {id} - {c?.title}
                   </li>
                 );
