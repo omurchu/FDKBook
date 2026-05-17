@@ -16,6 +16,211 @@ interface Concept {
   longVideo?: string;  // new
 }
 
+type ParsedSheet = {
+  concepts: Concept[];
+  angleMatrix: number[][];
+  strengthMatrix: number[][];
+  foundTuples: boolean;
+  n: number;
+};
+
+const norm = (v: any) => String(v ?? "").trim().toLowerCase();
+
+const trimOrEmpty = (v: any) => (typeof v === "string" ? v.trim() : (v ?? ""));
+
+const INITIAL_NEXT_STORY_COUNT = 2;
+const NEXT_STORY_ITEM_COLOR = "#fff8c6";
+
+const getConceptIdFromUrl = () => {
+  const id = Number(new URLSearchParams(window.location.search).get("concept"));
+  return Number.isFinite(id) && id > 0 ? id : null;
+};
+
+const updateConceptUrl = (conceptId: number, mode: "push" | "replace" = "push") => {
+  const url = new URL(window.location.href);
+  url.searchParams.set("concept", String(conceptId));
+
+  if (mode === "replace") {
+    window.history.replaceState({ conceptId }, "", url.toString());
+  } else {
+    window.history.pushState({ conceptId }, "", url.toString());
+  }
+};
+
+const isNumericLike = (v: any) => {
+  const s = String(v ?? "").trim();
+  if (!s) return false;
+  // allow "3; 90" tuple or "90"
+  if (s.includes(";")) {
+    const parts = s.split(";").map(p => p.trim());
+    return parts.length >= 2 && parts.every(p => p === "" ? false : !Number.isNaN(Number(p)));
+  }
+  return !Number.isNaN(Number(s));
+};
+
+const parseCellToStrengthAngle = (raw: any) => {
+  let angleVal = 0;
+  let strengthVal = 0;
+  let foundTuple = false;
+
+  if (raw !== undefined && raw !== null && String(raw).trim() !== "") {
+    const s = String(raw).trim();
+
+    if (s.includes(";")) {
+      const [strengthPart, anglePart] = s.split(";").map(v => v.trim());
+      const parsedStrength = Number(strengthPart);
+      const parsedAngle = Number(anglePart);
+
+      if (!Number.isNaN(parsedStrength) || !Number.isNaN(parsedAngle)) {
+        foundTuple = true;
+      }
+
+      strengthVal = Number.isNaN(parsedStrength) ? 0 : parsedStrength;
+      angleVal = Number.isNaN(parsedAngle) ? 0 : parsedAngle;
+    } else {
+      // Legacy format: angle only
+      const num = Number(s);
+      if (!Number.isNaN(num)) {
+        angleVal = num;
+        strengthVal = 0;
+      }
+    }
+  }
+
+  return { angleVal, strengthVal, foundTuple };
+};
+
+const parseSheet = (data: any[][]): ParsedSheet => {
+  // 1) Find header row (first ~20 rows)
+  let headerRowIdx = -1;
+  for (let r = 0; r < Math.min(20, data.length); r++) {
+    const row = data[r] ?? [];
+    const rowNorm = row.map(norm);
+    // look for any row that contains "id" and "title"
+    if (rowNorm.includes("id") && rowNorm.includes("title")) {
+      headerRowIdx = r;
+      break;
+    }
+  }
+  if (headerRowIdx < 0) {
+    throw new Error("Could not find a header row containing 'ID' and 'Title'.");
+  }
+
+  const header = data[headerRowIdx] ?? [];
+
+  // 2) Column indices for concept fields (support old+new)
+  const colIndexOf = (label: string) => header.findIndex((c: any) => norm(c) === label);
+
+  const idCol = colIndexOf("id");
+  const titleCol = colIndexOf("title");
+
+  // new format uses "Entry Text"; old uses "Entire"
+  let textCol = colIndexOf("entry text");
+  if (textCol < 0) textCol = colIndexOf("text entries");
+  if (textCol < 0) textCol = colIndexOf("entire");
+
+  // keep pdf/video in Concept even if absent in new sheets
+  let pdfCol = colIndexOf("pdf link");
+  if (pdfCol < 0) pdfCol = colIndexOf("pdf");
+  const videoCol = colIndexOf("video link");   // legacy single video column
+  const shortVideoCol = colIndexOf("short video");
+  const longVideoCol = colIndexOf("long video");
+
+  if (idCol < 0 || titleCol < 0 || textCol < 0) {
+    throw new Error("Missing one of required columns: ID, Title, and Entry Text/Text Entries/Entire.");
+  }
+
+  // 3) Find matrix start column: first numeric header cell (e.g., "1")
+  let matrixStartCol = -1;
+  for (let c = 0; c < header.length; c++) {
+    const v = header[c];
+    const s = String(v ?? "").trim();
+    if (s !== "" && !Number.isNaN(Number(s))) {
+      matrixStartCol = c;
+      break;
+    }
+  }
+  if (matrixStartCol < 0) {
+    throw new Error("Could not find matrix column headers (numeric IDs) in the header row.");
+  }
+
+  // Determine N based on consecutive numeric headers
+  const matrixHeaderIds: number[] = [];
+  for (let c = matrixStartCol; c < header.length; c++) {
+    const s = String(header[c] ?? "").trim();
+    if (s === "" || Number.isNaN(Number(s))) break;
+    matrixHeaderIds.push(Number(s));
+  }
+  const n = matrixHeaderIds.length;
+  if (n <= 0) throw new Error("Matrix appears to have zero columns.");
+
+  // 4) Determine old vs new layout:
+  // Old: row after header contains transposed titles in the matrix region (mostly non-numeric strings)
+  // New: row after header immediately contains matrix values (numeric/tuple/blank)
+  const rowAfterHeader = data[headerRowIdx + 1] ?? [];
+  let nonNumericCount = 0;
+  let sampleCount = 0;
+  for (let c = matrixStartCol; c < matrixStartCol + Math.min(n, 20); c++) {
+    const cell = rowAfterHeader[c];
+    const s = String(cell ?? "").trim();
+    if (s === "") continue;
+    sampleCount++;
+    if (!isNumericLike(cell)) nonNumericCount++;
+  }
+  const looksLikeTitleRow = sampleCount > 0 && nonNumericCount / sampleCount > 0.6;
+
+  // If old: matrix starts one row later (skip title row)
+  const matrixRowStart = looksLikeTitleRow ? headerRowIdx + 2 : headerRowIdx + 1;
+  const conceptRowStart = headerRowIdx + 1; // concept rows start immediately after header in both formats
+
+  // 5) Load concepts (first n concept rows)
+  const concepts: Concept[] = [];
+  for (let i = 0; i < n; i++) {
+    const row = data[conceptRowStart + i] ?? [];
+    const pdfRaw = pdfCol >= 0 ? trimOrEmpty(row[pdfCol]) : "";
+    const legacyVideoRaw = videoCol >= 0 ? trimOrEmpty(row[videoCol]) : "";
+    const shortVideoRaw = shortVideoCol >= 0 ? trimOrEmpty(row[shortVideoCol]) : "";
+    const longVideoRaw = longVideoCol >= 0 ? trimOrEmpty(row[longVideoCol]) : "";
+
+    // Prefer newer video columns when present; fall back to the legacy single video link.
+    const videoRaw = shortVideoRaw || longVideoRaw || legacyVideoRaw;
+
+    concepts.push({
+      id: Number(row[idCol]) || matrixHeaderIds[i] || (i + 1),
+      title: trimOrEmpty(row[titleCol]),
+      entire: trimOrEmpty(row[textCol]),
+      pdf: pdfRaw,
+      video: videoRaw,
+      shortVideo: shortVideoRaw,
+      longVideo: longVideoRaw,
+    });
+  }
+
+  // 6) Build angle + strength matrices (n x n)
+  const angleMatrix: number[][] = [];
+  const strengthMatrix: number[][] = [];
+  let foundTuples = false;
+
+  for (let i = 0; i < n; i++) {
+    const row = data[matrixRowStart + i] ?? [];
+    const aRow: number[] = [];
+    const sRow: number[] = [];
+
+    for (let j = 0; j < n; j++) {
+      const raw = row[matrixStartCol + j];
+      const parsed = parseCellToStrengthAngle(raw);
+      if (parsed.foundTuple) foundTuples = true;
+      aRow.push(parsed.angleVal);
+      sRow.push(parsed.strengthVal);
+    }
+
+    angleMatrix.push(aRow);
+    strengthMatrix.push(sRow);
+  }
+
+  return { concepts, angleMatrix, strengthMatrix, foundTuples, n };
+};
+
 function App() {
   const [concepts, setConcepts] = useState<Concept[]>([]);
   const [angleMatrix, setAngleMatrix] = useState<number[][]>([]);  // Added angleMatrix state 0-180 degrees
@@ -25,199 +230,21 @@ function App() {
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const [showTriangles, setShowTriangles] = useState<boolean>(false);
   const [showRelatedConcepts, setShowRelatedConcepts] = useState<boolean>(false);
+  const [hoveredDialConceptId, setHoveredDialConceptId] = useState<number | null>(null);
+  const [visibleNextStoryCount, setVisibleNextStoryCount] = useState<number>(INITIAL_NEXT_STORY_COUNT);
   const [fileName, setFileName] = useState<string>("No file chosen");
+  const [loadError, setLoadError] = useState<string>("");
 
   const historyEndRef = useRef<HTMLDivElement | null>(null);
   const tocItemRefs = useRef<Record<number, HTMLLIElement | null>>({});
 
-  type ParsedSheet = {
-    concepts: Concept[];
-    angleMatrix: number[][];
-    strengthMatrix: number[][];
-    foundTuples: boolean;
-    n: number;
-  };
-
-  const norm = (v: any) => String(v ?? "").trim().toLowerCase();
-
-  const isNumericLike = (v: any) => {
-    const s = String(v ?? "").trim();
-    if (!s) return false;
-    // allow "3; 90" tuple or "90"
-    if (s.includes(";")) {
-      const parts = s.split(";").map(p => p.trim());
-      return parts.length >= 2 && parts.every(p => p === "" ? false : !Number.isNaN(Number(p)));
-    }
-    return !Number.isNaN(Number(s));
-  };
-
-  const parseCellToStrengthAngle = (raw: any) => {
-    let angleVal = 0;
-    let strengthVal = 0;
-    let foundTuple = false;
-
-    if (raw !== undefined && raw !== null && String(raw).trim() !== "") {
-      const s = String(raw).trim();
-
-      if (s.includes(";")) {
-        const [strengthPart, anglePart] = s.split(";").map(v => v.trim());
-        const parsedStrength = Number(strengthPart);
-        const parsedAngle = Number(anglePart);
-
-        if (!Number.isNaN(parsedStrength) || !Number.isNaN(parsedAngle)) {
-          foundTuple = true;
-        }
-
-        strengthVal = Number.isNaN(parsedStrength) ? 0 : parsedStrength;
-        angleVal = Number.isNaN(parsedAngle) ? 0 : parsedAngle;
-      } else {
-        // Legacy format: angle only
-        const num = Number(s);
-        if (!Number.isNaN(num)) {
-          angleVal = num;
-          strengthVal = 0;
-        }
-      }
-    }
-
-    return { angleVal, strengthVal, foundTuple };
-  };
-
-  const parseSheet = (data: any[][]): ParsedSheet => {
-    // 1) Find header row (first ~20 rows)
-    let headerRowIdx = -1;
-    for (let r = 0; r < Math.min(20, data.length); r++) {
-      const row = data[r] ?? [];
-      const rowNorm = row.map(norm);
-      // look for any row that contains "id" and "title"
-      if (rowNorm.includes("id") && rowNorm.includes("title")) {
-        headerRowIdx = r;
-        break;
-      }
-    }
-    if (headerRowIdx < 0) {
-      throw new Error("Could not find a header row containing 'ID' and 'Title'.");
-    }
-
-    const header = data[headerRowIdx] ?? [];
-
-    // 2) Column indices for concept fields (support old+new)
-    const colIndexOf = (label: string) => header.findIndex((c: any) => norm(c) === label);
-
-    const idCol = colIndexOf("id");
-    const titleCol = colIndexOf("title");
-
-    // new format uses "Entry Text"; old uses "Entire"
-    let textCol = colIndexOf("entry text");
-    if (textCol < 0) textCol = colIndexOf("entire");
-
-    // keep pdf/video in Concept even if absent in new sheets
-    const pdfCol = colIndexOf("pdf link");
-    const videoCol = colIndexOf("video link");   // legacy single video column
-    const shortVideoCol = colIndexOf("short video");
-    const longVideoCol = colIndexOf("long video");
-
-    if (idCol < 0 || titleCol < 0 || textCol < 0) {
-      throw new Error("Missing one of required columns: ID, Title, and Entry Text/Entire.");
-    }
-
-    // 3) Find matrix start column: first numeric header cell (e.g., "1")
-    let matrixStartCol = -1;
-    for (let c = 0; c < header.length; c++) {
-      const v = header[c];
-      const s = String(v ?? "").trim();
-      if (s !== "" && !Number.isNaN(Number(s))) {
-        matrixStartCol = c;
-        break;
-      }
-    }
-    if (matrixStartCol < 0) {
-      throw new Error("Could not find matrix column headers (numeric IDs) in the header row.");
-    }
-
-    // Determine N based on consecutive numeric headers
-    const matrixHeaderIds: number[] = [];
-    for (let c = matrixStartCol; c < header.length; c++) {
-      const s = String(header[c] ?? "").trim();
-      if (s === "" || Number.isNaN(Number(s))) break;
-      matrixHeaderIds.push(Number(s));
-    }
-    const n = matrixHeaderIds.length;
-    if (n <= 0) throw new Error("Matrix appears to have zero columns.");
-
-    // 4) Determine old vs new layout:
-    // Old: row after header contains transposed titles in the matrix region (mostly non-numeric strings)
-    // New: row after header immediately contains matrix values (numeric/tuple/blank)
-    const rowAfterHeader = data[headerRowIdx + 1] ?? [];
-    let nonNumericCount = 0;
-    let sampleCount = 0;
-    for (let c = matrixStartCol; c < matrixStartCol + Math.min(n, 20); c++) {
-      const cell = rowAfterHeader[c];
-      const s = String(cell ?? "").trim();
-      if (s === "") continue;
-      sampleCount++;
-      if (!isNumericLike(cell)) nonNumericCount++;
-    }
-    const looksLikeTitleRow = sampleCount > 0 && nonNumericCount / sampleCount > 0.6;
-
-    // If old: matrix starts one row later (skip title row)
-    const matrixRowStart = looksLikeTitleRow ? headerRowIdx + 2 : headerRowIdx + 1;
-    const conceptRowStart = headerRowIdx + 1; // concept rows start immediately after header in both formats
-
-    // 5) Load concepts (first n concept rows)
-    const concepts: Concept[] = [];
-    for (let i = 0; i < n; i++) {
-      const row = data[conceptRowStart + i] ?? [];
-      const pdfRaw = pdfCol >= 0 ? trimOrEmpty(row[pdfCol]) : "";
-      const legacyVideoRaw = videoCol >= 0 ? trimOrEmpty(row[videoCol]) : "";
-      const shortVideoRaw = shortVideoCol >= 0 ? trimOrEmpty(row[shortVideoCol]) : "";
-      const longVideoRaw = longVideoCol >= 0 ? trimOrEmpty(row[longVideoCol]) : "";
-
-      // Prefer legacy video link if present; otherwise fall back to short, then long
-      const videoRaw = legacyVideoRaw || shortVideoRaw || longVideoRaw;
-
-      concepts.push({
-        id: Number(row[idCol]) || matrixHeaderIds[i] || (i + 1),
-        title: trimOrEmpty(row[titleCol]),
-        entire: trimOrEmpty(row[textCol]),
-        pdf: pdfRaw,
-        video: videoRaw,
-        shortVideo: shortVideoRaw,
-        longVideo: longVideoRaw,
-      });
-    }
-
-    // 6) Build angle + strength matrices (n x n)
-    const angleMatrix: number[][] = [];
-    const strengthMatrix: number[][] = [];
-    let foundTuples = false;
-
-    for (let i = 0; i < n; i++) {
-      const row = data[matrixRowStart + i] ?? [];
-      const aRow: number[] = [];
-      const sRow: number[] = [];
-
-      for (let j = 0; j < n; j++) {
-        const raw = row[matrixStartCol + j];
-        const parsed = parseCellToStrengthAngle(raw);
-        if (parsed.foundTuple) foundTuples = true;
-        aRow.push(parsed.angleVal);
-        sRow.push(parsed.strengthVal);
-      }
-
-      angleMatrix.push(aRow);
-      strengthMatrix.push(sRow);
-    }
-
-    return { concepts, angleMatrix, strengthMatrix, foundTuples, n };
-  };
-
-  const loadFromArrayBuffer = (buffer: ArrayBuffer, sourceLabel: string) => {
+  const loadFromArrayBuffer = React.useCallback((buffer: ArrayBuffer, sourceLabel: string) => {
     const wb = XLSX.read(buffer, { type: "array" });
     const ws = wb.Sheets[wb.SheetNames[0]];
     const data = XLSX.utils.sheet_to_json(ws, { header: 1 }) as any[][];
 
     const parsed = parseSheet(data);
+    setLoadError("");
 
     console.log(
       `${sourceLabel}: loaded ${parsed.n} concepts; ` +
@@ -228,15 +255,22 @@ function App() {
     setAngleMatrix(parsed.angleMatrix);
     setStrengthMatrix(parsed.strengthMatrix);
 
-    setSelectedConcept(parsed.concepts[0] ?? null);
-    if (parsed.concepts[0]) {
-      setHistory([parsed.concepts[0].id]);
+    const urlConceptId = getConceptIdFromUrl();
+    const initialConcept =
+      parsed.concepts.find((concept) => concept.id === urlConceptId) ??
+      parsed.concepts[0] ??
+      null;
+
+    setSelectedConcept(initialConcept);
+    if (initialConcept) {
+      setHistory([initialConcept.id]);
       setHistoryIndex(0);
+      updateConceptUrl(initialConcept.id, "replace");
     } else {
       setHistory([]);
       setHistoryIndex(-1);
     }
-  };
+  }, []);
 
 
   // Auto-load default matrix file on startup
@@ -252,22 +286,46 @@ function App() {
           setFileName("Default: fdk_matrix.xlsx");
         } catch (err) {
           console.error("Failed to auto-load default Excel file:", err);
+          setLoadError(err instanceof Error ? err.message : "Failed to auto-load default Excel file.");
         }
       })
       .catch(() => console.log("Default matrix file not found."));
-  }, []);
+  }, [loadFromArrayBuffer]);
 
   React.useEffect(() => {
     if (!selectedConcept) return;
 
+    setVisibleNextStoryCount(INITIAL_NEXT_STORY_COUNT);
+    setHoveredDialConceptId(null);
     tocItemRefs.current[selectedConcept.id]?.scrollIntoView({
       block: "center",
       behavior: "smooth",
     });
   }, [selectedConcept]);
 
-  
-  const trimOrEmpty = (v: any) => (typeof v === "string" ? v.trim() : (v ?? ""));
+  React.useEffect(() => {
+    if (concepts.length === 0) return;
+
+    const handlePopState = () => {
+      const conceptId = getConceptIdFromUrl();
+      const concept = concepts.find((c) => c.id === conceptId) ?? concepts[0];
+
+      setSelectedConcept(concept);
+      setHistory((previousHistory) => {
+        const existingIndex = previousHistory.lastIndexOf(concept.id);
+        if (existingIndex >= 0) {
+          setHistoryIndex(existingIndex);
+          return previousHistory;
+        }
+
+        setHistoryIndex(previousHistory.length);
+        return [...previousHistory, concept.id];
+      });
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [concepts]);
 
   const withHttps = (url: string) => {
     if (!url) return "";
@@ -309,34 +367,43 @@ function App() {
       loadFromArrayBuffer(buffer, "User upload");
     } catch (err) {
       console.error("Failed to parse uploaded Excel file:", err);
+      setLoadError(err instanceof Error ? err.message : "Failed to parse uploaded Excel file.");
     }
+  };
+  reader.onerror = () => {
+    setLoadError("Failed to read the selected Excel file.");
   };
 
   reader.readAsArrayBuffer(file);
 };
 
 
-  const handleSelectConcept = (concept: Concept) => {
+  const handleSelectConcept = (concept: Concept, urlMode: "push" | "replace" = "push") => {
     setSelectedConcept(concept);
     const newHistory = history.slice(0, historyIndex + 1);
     newHistory.push(concept.id);
     setHistory(newHistory);
     setHistoryIndex(newHistory.length - 1);
+    updateConceptUrl(concept.id, urlMode);
   };
 
   const handleBack = () => {
     if (historyIndex > 0) {
       const newIndex = historyIndex - 1;
+      const concept = concepts.find((c) => c.id === history[newIndex]) || null;
       setHistoryIndex(newIndex);
-      setSelectedConcept(concepts.find((c) => c.id === history[newIndex]) || null);
+      setSelectedConcept(concept);
+      if (concept) updateConceptUrl(concept.id);
     }
   };
 
   const handleForward = () => {
     if (historyIndex < history.length - 1) {
       const newIndex = historyIndex + 1;
+      const concept = concepts.find((c) => c.id === history[newIndex]) || null;
       setHistoryIndex(newIndex);
-      setSelectedConcept(concepts.find((c) => c.id === history[newIndex]) || null);
+      setSelectedConcept(concept);
+      if (concept) updateConceptUrl(concept.id);
     }
   };
 
@@ -362,8 +429,8 @@ function App() {
   const seenConceptIds = new Set(history);
   const unseenConcepts = concepts.filter((concept) => !seenConceptIds.has(concept.id));
 
-   // Next in Story: up to two strongest connections by strength
-  const nextStoryConcepts =
+   // Next in Story: strongest unseen connections by strength
+  const allNextStoryConcepts =
     selectedConcept && strengthMatrix[selectedConcept.id - 1]
       ? concepts
           .map((c, idx) => ({
@@ -383,8 +450,15 @@ function App() {
             // tie-breaker: smaller angle first
             return a.angle - b.angle;
           })
-          .slice(0, 2)
       : [];
+  const nextStoryConcepts = allNextStoryConcepts.slice(0, visibleNextStoryCount);
+  const hasMoreNextStoryConcepts = visibleNextStoryCount < allNextStoryConcepts.length;
+  const nextStoryConceptIds = new Set(nextStoryConcepts.map((rel) => rel.concept.id));
+  const dialRelatedConcepts = relatedConcepts.filter(
+    (rel) => !nextStoryConceptIds.has(rel.concept.id)
+  );
+  const hoveredDialRelation =
+    dialRelatedConcepts.find((rel) => rel.concept.id === hoveredDialConceptId) ?? null;
 
   const handleLeapIntoUnknown = () => {
     if (unseenConcepts.length === 0) return;
@@ -439,11 +513,15 @@ function App() {
           <input
             type="file"
             accept=".xlsx, .xls"
+            onClick={(e) => {
+              e.currentTarget.value = "";
+            }}
             onChange={handleFileUpload}
             style={{ display: "none" }}
           />
         </label>
         <span>{fileName}</span>
+        {loadError && <span className="load-error">{loadError}</span>}
         <label>
           <input
             type="checkbox"
@@ -588,7 +666,7 @@ function App() {
               <ul className="next-story-list">
                 {nextStoryConcepts.map((rel, idx) => (
                   <li
-                    key={idx}
+                    key={rel.concept.id}
                     className="next-story-item"
                     onClick={() => handleSelectConcept(rel.concept)}
                   >
@@ -601,8 +679,21 @@ function App() {
               </ul>
             )}
 
+            {hasMoreNextStoryConcepts && (
+              <button
+                className="other-suggestions-button"
+                onClick={() =>
+                  setVisibleNextStoryCount((count) =>
+                    Math.min(count + 2, allNextStoryConcepts.length)
+                  )
+                }
+              >
+                Want other suggestions?
+              </button>
+            )}
+
             <div className="leap-section">
-              <p>Don't like our suggestions?</p>
+              <p>Don't like any of our suggestions?</p>
               <button
                 className="leap-button"
                 onClick={handleLeapIntoUnknown}
@@ -650,16 +741,10 @@ function App() {
 
                 <circle cx="10" cy="150" r="5" fill="darkblue" stroke="black" />
 
-                {relatedConcepts.map((rel, idx) => {
+                {dialRelatedConcepts.map((rel) => {
                   const pos = polarToCartesian(rel.angle, g_radius-10);
-                  let yOffset = 0;
-                  for (let j = 0; j < idx; j++) {
-                    if (Math.abs(rel.angle - relatedConcepts[j].angle) < 15) {
-                      yOffset += 12;
-                    }
-                  }
                   return (
-                    <g key={idx}>
+                    <g key={`related-${rel.concept.id}`}>
                       <line
                         x1="10"
                         y1="150"
@@ -669,18 +754,84 @@ function App() {
                         strokeDasharray="4"
                       />
                       <circle
+                        className="semidisc-related-disc"
                         cx={pos.x}
                         cy={pos.y}
                         r="5"
                         fill={getRelationColor(rel.angle)}
                         stroke="black"
+                        tabIndex={0}
+                        onMouseEnter={() => setHoveredDialConceptId(rel.concept.id)}
+                        onMouseLeave={() => setHoveredDialConceptId(null)}
+                        onFocus={() => setHoveredDialConceptId(rel.concept.id)}
+                        onBlur={() => setHoveredDialConceptId(null)}
                       />
-                      <text x={pos.x + 5} y={pos.y + yOffset} fontSize="13" fill="black">
+                    </g>
+                  );
+                })}
+
+                {nextStoryConcepts.map((rel, idx) => {
+                  const pos = polarToCartesian(rel.angle, g_radius-10);
+                  const labelPos = polarToCartesian(rel.angle, g_radius+12);
+                  let yOffset = 0;
+                  for (let j = 0; j < idx; j++) {
+                    if (Math.abs(rel.angle - nextStoryConcepts[j].angle) < 15) {
+                      yOffset += 12;
+                    }
+                  }
+                  return (
+                    <g key={`next-story-${rel.concept.id}`}>
+                      <line
+                        x1="10"
+                        y1="150"
+                        x2={pos.x}
+                        y2={pos.y}
+                        stroke="black"
+                      />
+                      <circle
+                        cx={pos.x}
+                        cy={pos.y}
+                        r="5"
+                        fill={NEXT_STORY_ITEM_COLOR}
+                        stroke="black"
+                      />
+                      <text
+                        className="semidisc-next-story-label"
+                        x={labelPos.x}
+                        y={labelPos.y + yOffset}
+                        fontSize="13"
+                        fill="black"
+                      >
                         {rel.concept.title}
                       </text>
                     </g>
                   );
                 })}
+
+                {hoveredDialRelation && (() => {
+                  const pos = polarToCartesian(hoveredDialRelation.angle, g_radius-10);
+                  const labelWidth = Math.max(hoveredDialRelation.concept.title.length * 7, 40);
+                  return (
+                    <g className="semidisc-hover-label">
+                      <rect
+                        x={pos.x + 3}
+                        y={pos.y - 14}
+                        width={labelWidth}
+                        height="18"
+                        fill="white"
+                        stroke="#ccc"
+                      />
+                      <text
+                        x={pos.x + 7}
+                        y={pos.y}
+                        fontSize="13"
+                        fill="#444"
+                      >
+                        {hoveredDialRelation.concept.title}
+                      </text>
+                    </g>
+                  );
+                })()}
               </svg>
             </div>
           )}
