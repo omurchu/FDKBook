@@ -761,7 +761,7 @@ function App() {
   const [showAbout, setShowAbout] = useState<boolean>(false);
   const [showClearHistoryConfirm, setShowClearHistoryConfirm] = useState<boolean>(false);
   const [showSearch, setShowSearch] = useState<boolean>(false);
-  const [showHistoryQa, setShowHistoryQa] = useState<boolean>(true);
+  const [showHistoryQa, setShowHistoryQa] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [showSearchDialog, setShowSearchDialog] = useState<boolean>(false);
   const [showTriangles, setShowTriangles] = useState<boolean>(true);
