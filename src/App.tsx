@@ -24,12 +24,39 @@ type ParsedSheet = {
   n: number;
 };
 
+type ActiveTab = "home" | "graph";
+type PathMode = "hide" | "simple" | "detailed";
+
+type HistoryEntry = {
+  id: number;
+  choice: string;
+};
+
+type GraphNode = {
+  concept: Concept;
+  x: number;
+  y: number;
+};
+
+type GraphLink = {
+  source: number;
+  target: number;
+  strength: number;
+};
+
 const norm = (v: any) => String(v ?? "").trim().toLowerCase();
 
 const trimOrEmpty = (v: any) => (typeof v === "string" ? v.trim() : (v ?? ""));
 
 const INITIAL_NEXT_STORY_COUNT = 2;
+const MAX_OTHER_SUGGESTION_CLICKS = 2;
+const INITIAL_HISTORY_CHOICE = "j_Start";
 const NEXT_STORY_ITEM_COLOR = "#fff8c6";
+const GRAPH_WIDTH = 980;
+const GRAPH_HEIGHT = 640;
+const GRAPH_CENTER_X = GRAPH_WIDTH / 2 + 50;
+const GRAPH_CENTER_Y = GRAPH_HEIGHT / 2;
+const GRAPH_NODE_CLICK_ZOOM = 1.1;
 
 const getConceptIdFromUrl = () => {
   const id = Number(new URLSearchParams(window.location.search).get("concept"));
@@ -45,6 +72,15 @@ const updateConceptUrl = (conceptId: number, mode: "push" | "replace" = "push") 
   } else {
     window.history.pushState({ conceptId }, "", url.toString());
   }
+};
+
+const getGraphHistoryPathClass = (choice: string) => {
+  if (choice.startsWith("j_NextinStory_")) return "graph-history-path-next-story";
+  if (choice === "j_Leap") return "graph-history-path-leap";
+  if (choice === "j_History") return "graph-history-path-history";
+  if (choice === "j_TOC") return "graph-history-path-toc";
+  if (choice === "J_node") return "graph-history-path-node";
+  return "graph-history-path-next-story";
 };
 
 const isNumericLike = (v: any) => {
@@ -221,22 +257,526 @@ const parseSheet = (data: any[][]): ParsedSheet => {
   return { concepts, angleMatrix, strengthMatrix, foundTuples, n };
 };
 
+function ConceptGraph({
+  concepts,
+  angleMatrix,
+  strengthMatrix,
+  selectedConcept,
+  history,
+  nextStoryConcepts,
+  getRelationColor,
+  onPreviewConcept,
+  onOpenConcept,
+}: {
+  concepts: Concept[];
+  angleMatrix: number[][];
+  strengthMatrix: number[][];
+  selectedConcept: Concept | null;
+  history: HistoryEntry[];
+  nextStoryConcepts: Array<{ concept: Concept; angle: number; strength: number }>;
+  getRelationColor: (angle: number) => string;
+  onPreviewConcept: (concept: Concept) => void;
+  onOpenConcept: (concept: Concept) => void;
+}) {
+  const [zoomScale, setZoomScale] = React.useState(1);
+  const [focusConceptId, setFocusConceptId] = React.useState<number | null>(null);
+  const [hoveredGraphConceptId, setHoveredGraphConceptId] = React.useState<number | null>(null);
+  const [minimumStrength, setMinimumStrength] = React.useState(4);
+  const [pathMode, setPathMode] = React.useState<PathMode>("simple");
+  const [graphPan, setGraphPan] = React.useState({ x: 0, y: 0 });
+  const [isDraggingGraph, setIsDraggingGraph] = React.useState(false);
+  const clickTimerRef = React.useRef<number | null>(null);
+  const graphDragRef = React.useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    panX: number;
+    panY: number;
+  } | null>(null);
+
+  React.useEffect(() => {
+    return () => {
+      if (clickTimerRef.current) {
+        window.clearTimeout(clickTimerRef.current);
+      }
+    };
+  }, []);
+
+  const previewGraphNode = (concept: Concept) => {
+    const isAlreadyFocused = focusConceptId === concept.id;
+    setFocusConceptId(isAlreadyFocused ? null : concept.id);
+    setZoomScale(isAlreadyFocused ? 1 : GRAPH_NODE_CLICK_ZOOM);
+    onPreviewConcept(concept);
+  };
+
+  const scheduleGraphNodePreview = (concept: Concept) => {
+    if (clickTimerRef.current) {
+      window.clearTimeout(clickTimerRef.current);
+    }
+
+    clickTimerRef.current = window.setTimeout(() => {
+      previewGraphNode(concept);
+      clickTimerRef.current = null;
+    }, 220);
+  };
+
+  const openGraphNode = (concept: Concept) => {
+    if (clickTimerRef.current) {
+      window.clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+    }
+
+    setFocusConceptId(concept.id);
+    setZoomScale(GRAPH_NODE_CLICK_ZOOM);
+    onOpenConcept(concept);
+  };
+
+  const { nodes, links } = React.useMemo(() => {
+    const graphLinks: GraphLink[] = [];
+
+    for (let i = 0; i < concepts.length; i++) {
+      for (let j = i + 1; j < concepts.length; j++) {
+        const strength = Math.max(strengthMatrix[i]?.[j] ?? 0, strengthMatrix[j]?.[i] ?? 0);
+        if (strength >= minimumStrength) {
+          graphLinks.push({ source: i, target: j, strength });
+        }
+      }
+    }
+
+    const max = graphLinks.reduce((current, link) => Math.max(current, link.strength), 1);
+    const radius = Math.min(GRAPH_WIDTH, GRAPH_HEIGHT) * 0.38;
+    const graphNodes: GraphNode[] = concepts.map((concept, index) => {
+      const angle = (Math.PI * 2 * index) / Math.max(concepts.length, 1);
+      return {
+        concept,
+        x: GRAPH_CENTER_X + Math.cos(angle) * radius,
+        y: GRAPH_CENTER_Y + Math.sin(angle) * radius,
+      };
+    });
+
+    const velocities = graphNodes.map(() => ({ x: 0, y: 0 }));
+    const iterations = Math.min(260, 90 + concepts.length * 3);
+
+    for (let step = 0; step < iterations; step++) {
+      for (let i = 0; i < graphNodes.length; i++) {
+        for (let j = i + 1; j < graphNodes.length; j++) {
+          const a = graphNodes[i];
+          const b = graphNodes[j];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const distanceSquared = Math.max(dx * dx + dy * dy, 25);
+          const distance = Math.sqrt(distanceSquared);
+          const force = 1200 / distanceSquared;
+          const fx = (dx / distance) * force;
+          const fy = (dy / distance) * force;
+
+          velocities[i].x -= fx;
+          velocities[i].y -= fy;
+          velocities[j].x += fx;
+          velocities[j].y += fy;
+        }
+      }
+
+      for (const link of graphLinks) {
+        const a = graphNodes[link.source];
+        const b = graphNodes[link.target];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const distance = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
+        const desired = 180 - (link.strength / max) * 95;
+        const force = (distance - desired) * 0.008 * (link.strength / max);
+        const fx = (dx / distance) * force;
+        const fy = (dy / distance) * force;
+
+        velocities[link.source].x += fx;
+        velocities[link.source].y += fy;
+        velocities[link.target].x -= fx;
+        velocities[link.target].y -= fy;
+      }
+
+      for (let i = 0; i < graphNodes.length; i++) {
+        const node = graphNodes[i];
+        velocities[i].x += (GRAPH_CENTER_X - node.x) * 0.002;
+        velocities[i].y += (GRAPH_CENTER_Y - node.y) * 0.002;
+        velocities[i].x *= 0.82;
+        velocities[i].y *= 0.82;
+        node.x = Math.min(GRAPH_WIDTH - 44, Math.max(44, node.x + velocities[i].x));
+        node.y = Math.min(GRAPH_HEIGHT - 36, Math.max(36, node.y + velocities[i].y));
+      }
+    }
+
+    return { nodes: graphNodes, links: graphLinks };
+  }, [concepts, strengthMatrix, minimumStrength]);
+
+  const focusedConcept =
+    focusConceptId !== null
+      ? concepts.find((concept) => concept.id === focusConceptId) ?? null
+      : null;
+  const focusedIndex = focusedConcept
+    ? concepts.findIndex((concept) => concept.id === focusedConcept.id)
+    : -1;
+  const selectedNode =
+    selectedConcept ? nodes.find((node) => node.concept.id === selectedConcept.id) : null;
+  const focusNode =
+    nodes.find((node) => node.concept.id === focusConceptId) ?? selectedNode;
+  const historyConceptIds = new Set(history.map((entry) => entry.id));
+  const nextStoryConceptIds = new Set(nextStoryConcepts.map((rel) => rel.concept.id));
+  const relatedAngleById = new Map<number, number>();
+  const nodeByConceptId = new Map(nodes.map((node) => [node.concept.id, node]));
+  const historyPathEntries = history
+    .map((entry) => {
+      const node = nodeByConceptId.get(entry.id);
+      return node ? { node, choice: entry.choice } : null;
+    })
+    .filter((entry): entry is { node: GraphNode; choice: string } => Boolean(entry));
+
+  if (focusedIndex >= 0) {
+    concepts.forEach((concept, index) => {
+      const angle = angleMatrix[focusedIndex]?.[index] ?? 0;
+      if (concept.id !== focusedConcept?.id && angle > 0) {
+        relatedAngleById.set(concept.id, angle);
+      }
+    });
+  }
+
+  const isZoomed = zoomScale > 1.01 && Boolean(focusNode);
+  const baseGraphTransform = isZoomed && focusNode
+    ? `translate(${GRAPH_CENTER_X}, ${GRAPH_CENTER_Y}) scale(${zoomScale}) translate(${-focusNode.x}, ${-focusNode.y})`
+    : `scale(${zoomScale})`;
+  const graphTransform = `translate(${graphPan.x}, ${graphPan.y}) ${baseGraphTransform}`;
+  const showHistoryPathLines = pathMode !== "hide";
+  const showPathwayLegend = pathMode === "detailed";
+  const zoomIn = () => setZoomScale((scale) => Math.min(scale * 1.25, 4));
+  const zoomOut = () => setZoomScale((scale) => Math.max(scale / 1.25, 0.6));
+  const handleGraphWheel = (event: React.WheelEvent<SVGSVGElement>) => {
+    event.preventDefault();
+    const zoomFactor = event.deltaY < 0 ? 1.1 : 1 / 1.1;
+    setZoomScale((scale) => Math.min(4, Math.max(0.6, scale * zoomFactor)));
+  };
+  const getSvgPoint = (event: React.PointerEvent<SVGRectElement>) => {
+    const svg = event.currentTarget.ownerSVGElement;
+    if (!svg) return { x: 0, y: 0 };
+
+    const rect = svg.getBoundingClientRect();
+    return {
+      x: ((event.clientX - rect.left) / rect.width) * GRAPH_WIDTH,
+      y: ((event.clientY - rect.top) / rect.height) * GRAPH_HEIGHT,
+    };
+  };
+  const handleGraphBackgroundPointerDown = (event: React.PointerEvent<SVGRectElement>) => {
+    if (event.button !== 0) return;
+
+    const point = getSvgPoint(event);
+    graphDragRef.current = {
+      pointerId: event.pointerId,
+      startX: point.x,
+      startY: point.y,
+      panX: graphPan.x,
+      panY: graphPan.y,
+    };
+    setIsDraggingGraph(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const handleGraphBackgroundPointerMove = (event: React.PointerEvent<SVGRectElement>) => {
+    const drag = graphDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    const point = getSvgPoint(event);
+    setGraphPan({
+      x: drag.panX + point.x - drag.startX,
+      y: drag.panY + point.y - drag.startY,
+    });
+  };
+  const stopGraphBackgroundDrag = (event: React.PointerEvent<SVGRectElement>) => {
+    const drag = graphDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    graphDragRef.current = null;
+    setIsDraggingGraph(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  if (concepts.length === 0) {
+    return (
+      <div className="graph-empty">
+        Load a matrix file to see the concept network.
+      </div>
+    );
+  }
+
+  return (
+    <div className="graph-view">
+      <div className="graph-toolbar">
+        <span>{concepts.length} concepts</span>
+        <span>{links.length} strength links</span>
+        <button onClick={zoomOut}>Zoom out</button>
+        <button onClick={zoomIn}>Zoom in</button>
+        <div className="graph-path-mode-control" role="radiogroup" aria-label="Path visualization">
+          <span>Path:</span>
+          {[
+            { value: "hide", label: "Hide" },
+            { value: "simple", label: "Simple" },
+            { value: "detailed", label: "Detailed" },
+          ].map((option) => (
+            <label
+              key={option.value}
+              className="graph-path-mode-option"
+            >
+              <input
+                type="radio"
+                name="path-mode"
+                value={option.value}
+                checked={pathMode === option.value}
+                onChange={() => setPathMode(option.value as PathMode)}
+              />
+              {option.label}
+            </label>
+          ))}
+        </div>
+        <label className="graph-strength-control">
+          Min strength
+          <select
+            value={minimumStrength}
+            onChange={(event) => setMinimumStrength(Number(event.target.value))}
+          >
+            {[1, 2, 3, 4, 5].map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <svg
+        className={`graph-svg ${isDraggingGraph ? "is-dragging" : ""}`}
+        viewBox={`0 0 ${GRAPH_WIDTH} ${GRAPH_HEIGHT}`}
+        role="img"
+        onWheel={handleGraphWheel}
+      >
+        <title>Concept strength network</title>
+        <defs>
+          <marker
+            id="history-arrowhead"
+            markerWidth="6"
+            markerHeight="6"
+            refX="5"
+            refY="3"
+            orient="auto"
+            markerUnits="userSpaceOnUse"
+          >
+            <path d="M0,0 L6,3 L0,6 Z" fill="context-stroke" />
+          </marker>
+        </defs>
+        <rect
+          className="graph-pan-background"
+          x="0"
+          y="0"
+          width={GRAPH_WIDTH}
+          height={GRAPH_HEIGHT}
+          onPointerDown={handleGraphBackgroundPointerDown}
+          onPointerMove={handleGraphBackgroundPointerMove}
+          onPointerUp={stopGraphBackgroundDrag}
+          onPointerCancel={stopGraphBackgroundDrag}
+        />
+        <g transform={graphTransform}>
+          {links.map((link) => {
+            const source = nodes[link.source];
+            const target = nodes[link.target];
+            const touchesSelected =
+              focusedConcept &&
+              (source.concept.id === focusedConcept.id || target.concept.id === focusedConcept.id);
+            return (
+              <line
+                key={`${source.concept.id}-${target.concept.id}`}
+                x1={source.x}
+                y1={source.y}
+                x2={target.x}
+                y2={target.y}
+                stroke={touchesSelected ? "#111" : "#667085"}
+                strokeOpacity={touchesSelected ? 0.48 : 0.22}
+                strokeWidth={touchesSelected ? 0.8 + link.strength * 0.65 : 0.8}
+              />
+            );
+          })}
+          {showHistoryPathLines && historyPathEntries.slice(1).map((entry, index) => {
+            const previousEntry = historyPathEntries[index];
+            const node = entry.node;
+            const previousNode = previousEntry.node;
+            const pathClassName =
+              pathMode === "simple"
+                ? "graph-history-path graph-history-path-next-story"
+                : `graph-history-path ${getGraphHistoryPathClass(entry.choice)}`;
+            return (
+              <line
+                key={`history-${previousNode.concept.id}-${node.concept.id}-${index}`}
+                className={pathClassName}
+                x1={previousNode.x}
+                y1={previousNode.y}
+                x2={node.x}
+                y2={node.y}
+                markerEnd="url(#history-arrowhead)"
+              />
+            );
+          })}
+          {selectedNode &&
+            nextStoryConcepts.map((rel) => {
+              const targetNode = nodeByConceptId.get(rel.concept.id);
+              if (!targetNode) return null;
+
+              return (
+                <line
+                  key={`next-story-suggestion-${rel.concept.id}`}
+                  className="graph-next-story-link"
+                  x1={selectedNode.x}
+                  y1={selectedNode.y}
+                  x2={targetNode.x}
+                  y2={targetNode.y}
+                />
+              );
+            })}
+          {nodes.map((node) => {
+            const isSelected = selectedConcept?.id === node.concept.id;
+            const relationAngle = relatedAngleById.get(node.concept.id);
+            const isRelated = relationAngle !== undefined;
+            const isHistory = historyConceptIds.has(node.concept.id);
+            const isNextStory = nextStoryConceptIds.has(node.concept.id);
+            const isHovered = hoveredGraphConceptId === node.concept.id;
+            const hasMedia = Boolean(node.concept.pdf || node.concept.video);
+            const mediaLabel = node.concept.video ? "Video" : node.concept.pdf ? "PDF" : "";
+            const graphNodeLabel =
+              isHovered && mediaLabel
+                ? `${mediaLabel}: ${node.concept.title}`
+                : node.concept.title;
+            const showLabel = isSelected || isHistory || isNextStory || isHovered || (isZoomed && isRelated);
+            const fill = isSelected
+              ? "#0f4c81"
+              : isRelated
+              ? getRelationColor(relationAngle)
+              : isHistory
+              ? "#e6f3ff"
+              : isNextStory
+              ? NEXT_STORY_ITEM_COLOR
+              : "#d9eef7";
+
+            return (
+              <g
+                key={node.concept.id}
+                className="graph-node"
+                transform={`translate(${node.x}, ${node.y})`}
+                onMouseEnter={() => setHoveredGraphConceptId(node.concept.id)}
+                onMouseLeave={() => setHoveredGraphConceptId(null)}
+                onFocus={() => setHoveredGraphConceptId(node.concept.id)}
+                onBlur={() => setHoveredGraphConceptId(null)}
+                onClick={() => scheduleGraphNodePreview(node.concept)}
+                onDoubleClick={() => openGraphNode(node.concept)}
+                tabIndex={0}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    previewGraphNode(node.concept);
+                  }
+                }}
+              >
+                {hasMedia ? (
+                  <rect
+                    x={-(isSelected ? 10 : isRelated ? 8 : 6)}
+                    y={-(isSelected ? 10 : isRelated ? 8 : 6)}
+                    width={(isSelected ? 10 : isRelated ? 8 : 6) * 2}
+                    height={(isSelected ? 10 : isRelated ? 8 : 6) * 2}
+                    fill={fill}
+                    stroke={isHistory ? "#c1121f" : isNextStory ? "#d6b800" : isSelected ? "#061f35" : isRelated ? "#222" : "#4b7f95"}
+                    strokeWidth={isHistory ? 3 : isNextStory ? 2.4 : isSelected ? 3 : isRelated ? 2 : 1.2}
+                  />
+                ) : (
+                  <circle
+                    r={isSelected ? 10 : isRelated ? 8 : 6}
+                    fill={fill}
+                    stroke={isHistory ? "#c1121f" : isNextStory ? "#d6b800" : isSelected ? "#061f35" : isRelated ? "#222" : "#4b7f95"}
+                    strokeWidth={isHistory ? 3 : isNextStory ? 2.4 : isSelected ? 3 : isRelated ? 2 : 1.2}
+                  />
+                )}
+                {showLabel && (
+                  <text
+                    x="12"
+                    y="4"
+                    fontSize={isSelected ? 14 : 11}
+                    fontWeight={isSelected ? 700 : 400}
+                    fill={isSelected ? "#111" : "#344054"}
+                  >
+                    {graphNodeLabel}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+        </g>
+        {showPathwayLegend && (
+        <g className="graph-pathway-legend" transform={`translate(18, ${GRAPH_HEIGHT - 184})`}>
+          <rect className="graph-pathway-legend-bg" width="178" height="166" rx="4" />
+          <text className="graph-pathway-legend-title" x="12" y="22">
+            Pathways
+          </text>
+          {[
+            { label: "Next in Story", className: "graph-history-path-next-story" },
+            { label: "Leap", className: "graph-history-path-leap" },
+            { label: "History", className: "graph-history-path-history" },
+            { label: "TOC", className: "graph-history-path-toc" },
+            { label: "Node", className: "graph-history-path-node" },
+            { label: "Current suggestions", className: "graph-next-story-link" },
+          ].map((item, index) => {
+            const y = 45 + index * 18;
+            return (
+              <g key={item.label} transform={`translate(12, ${y})`}>
+                <line
+                  className={`graph-pathway-legend-line ${item.className}`}
+                  x1="0"
+                  y1="0"
+                  x2="32"
+                  y2="0"
+                />
+                <text className="graph-pathway-legend-label" x="42" y="4">
+                  {item.label}
+                </text>
+              </g>
+            );
+          })}
+        </g>
+        )}
+      </svg>
+    </div>
+  );
+}
+
 function App() {
   const [concepts, setConcepts] = useState<Concept[]>([]);
   const [angleMatrix, setAngleMatrix] = useState<number[][]>([]);  // Added angleMatrix state 0-180 degrees
   const [strengthMatrix, setStrengthMatrix] = useState<number[][]>([]); // Added strengthMatrix state 0-5
   const [selectedConcept, setSelectedConcept] = useState<Concept | null>(null);
-  const [history, setHistory] = useState<number[]>([]);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
-  const [showTriangles, setShowTriangles] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<ActiveTab>("home");
+  const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
+  const [showAbout, setShowAbout] = useState<boolean>(false);
+  const [showClearHistoryConfirm, setShowClearHistoryConfirm] = useState<boolean>(false);
+  const [showSearch, setShowSearch] = useState<boolean>(false);
+  const [showHistoryQa, setShowHistoryQa] = useState<boolean>(true);
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  const [showSearchDialog, setShowSearchDialog] = useState<boolean>(false);
+  const [showTriangles, setShowTriangles] = useState<boolean>(true);
+  const [showToc, setShowToc] = useState<boolean>(false);
   const [showRelatedConcepts, setShowRelatedConcepts] = useState<boolean>(false);
+  const [showStrengthsAndAngles, setShowStrengthsAndAngles] = useState<boolean>(false);
   const [hoveredDialConceptId, setHoveredDialConceptId] = useState<number | null>(null);
-  const [visibleNextStoryCount, setVisibleNextStoryCount] = useState<number>(INITIAL_NEXT_STORY_COUNT);
+  const [nextStoryOffset, setNextStoryOffset] = useState<number>(0);
+  const [otherSuggestionClicks, setOtherSuggestionClicks] = useState<number>(0);
   const [fileName, setFileName] = useState<string>("No file chosen");
   const [loadError, setLoadError] = useState<string>("");
 
   const historyEndRef = useRef<HTMLDivElement | null>(null);
   const tocItemRefs = useRef<Record<number, HTMLLIElement | null>>({});
+  const menuRef = useRef<HTMLDetailsElement | null>(null);
 
   const loadFromArrayBuffer = React.useCallback((buffer: ArrayBuffer, sourceLabel: string) => {
     const wb = XLSX.read(buffer, { type: "array" });
@@ -263,7 +803,7 @@ function App() {
 
     setSelectedConcept(initialConcept);
     if (initialConcept) {
-      setHistory([initialConcept.id]);
+      setHistory([{ id: initialConcept.id, choice: INITIAL_HISTORY_CHOICE }]);
       setHistoryIndex(0);
       updateConceptUrl(initialConcept.id, "replace");
     } else {
@@ -283,7 +823,7 @@ function App() {
       .then((buffer) => {
         try {
           loadFromArrayBuffer(buffer, "Auto-load");
-          setFileName("Default: fdk_matrix.xlsx");
+          setFileName("Active Matrix: fdk_matrix.xlsx");
         } catch (err) {
           console.error("Failed to auto-load default Excel file:", err);
           setLoadError(err instanceof Error ? err.message : "Failed to auto-load default Excel file.");
@@ -293,15 +833,18 @@ function App() {
   }, [loadFromArrayBuffer]);
 
   React.useEffect(() => {
-    if (!selectedConcept) return;
+    if (!selectedConcept || activeTab !== "home") return;
 
-    setVisibleNextStoryCount(INITIAL_NEXT_STORY_COUNT);
+    setNextStoryOffset(0);
+    setOtherSuggestionClicks(0);
     setHoveredDialConceptId(null);
-    tocItemRefs.current[selectedConcept.id]?.scrollIntoView({
-      block: "center",
-      behavior: "smooth",
-    });
-  }, [selectedConcept]);
+    window.setTimeout(() => {
+      tocItemRefs.current[selectedConcept.id]?.scrollIntoView({
+        block: "center",
+        behavior: "smooth",
+      });
+    }, 0);
+  }, [selectedConcept, activeTab]);
 
   React.useEffect(() => {
     if (concepts.length === 0) return;
@@ -312,20 +855,43 @@ function App() {
 
       setSelectedConcept(concept);
       setHistory((previousHistory) => {
-        const existingIndex = previousHistory.lastIndexOf(concept.id);
+        const existingIndex = previousHistory.map((entry) => entry.id).lastIndexOf(concept.id);
         if (existingIndex >= 0) {
           setHistoryIndex(existingIndex);
           return previousHistory;
         }
 
         setHistoryIndex(previousHistory.length);
-        return [...previousHistory, concept.id];
+        return [...previousHistory, { id: concept.id, choice: "j_Browser" }];
       });
     };
 
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, [concepts]);
+
+  React.useEffect(() => {
+    if (!isMenuOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setIsMenuOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isMenuOpen]);
 
   const withHttps = (url: string) => {
     if (!url) return "";
@@ -357,6 +923,7 @@ function App() {
   if (!file) return;
 
   setFileName(file.name);
+  setIsMenuOpen(false);
 
   const reader = new FileReader();
   reader.onload = (evt) => {
@@ -378,19 +945,62 @@ function App() {
 };
 
 
-  const handleSelectConcept = (concept: Concept, urlMode: "push" | "replace" = "push") => {
+  const handleSelectConcept = (
+    concept: Concept,
+    choice: string,
+    urlMode: "push" | "replace" = "push"
+  ) => {
     setSelectedConcept(concept);
     const newHistory = history.slice(0, historyIndex + 1);
-    newHistory.push(concept.id);
+    newHistory.push({ id: concept.id, choice });
     setHistory(newHistory);
     setHistoryIndex(newHistory.length - 1);
     updateConceptUrl(concept.id, urlMode);
   };
 
+  const handlePreviewGraphConcept = (concept: Concept) => {
+    setSelectedConcept(concept);
+    updateConceptUrl(concept.id, "replace");
+  };
+
+  const handleOpenGraphConcept = (concept: Concept) => {
+    setActiveTab("home");
+    handleSelectConcept(concept, "J_node");
+  };
+
+  const handleClearHistory = () => {
+    if (!selectedConcept) {
+      setHistory([]);
+      setHistoryIndex(-1);
+      return;
+    }
+
+    setHistory([{ id: selectedConcept.id, choice: INITIAL_HISTORY_CHOICE }]);
+    setHistoryIndex(0);
+  };
+
+  const searchResults = searchQuery.trim()
+    ? concepts.filter((concept) =>
+        concept.title.toLowerCase().includes(searchQuery.trim().toLowerCase())
+      )
+    : [];
+
+  const handleSearchSubmit = (event?: React.FormEvent) => {
+    event?.preventDefault();
+    setShowSearchDialog(true);
+  };
+
+  const handleSelectSearchResult = (concept: Concept) => {
+    setShowSearchDialog(false);
+    setSearchQuery("");
+    setActiveTab("home");
+    handleSelectConcept(concept, "j_Search");
+  };
+
   const handleBack = () => {
     if (historyIndex > 0) {
       const newIndex = historyIndex - 1;
-      const concept = concepts.find((c) => c.id === history[newIndex]) || null;
+      const concept = concepts.find((c) => c.id === history[newIndex].id) || null;
       setHistoryIndex(newIndex);
       setSelectedConcept(concept);
       if (concept) updateConceptUrl(concept.id);
@@ -400,18 +1010,18 @@ function App() {
   const handleForward = () => {
     if (historyIndex < history.length - 1) {
       const newIndex = historyIndex + 1;
-      const concept = concepts.find((c) => c.id === history[newIndex]) || null;
+      const concept = concepts.find((c) => c.id === history[newIndex].id) || null;
       setHistoryIndex(newIndex);
       setSelectedConcept(concept);
       if (concept) updateConceptUrl(concept.id);
     }
   };
 
-  const handleSelectHistoryItem = (id: number) => {
-    const concept = concepts.find((c) => c.id === id);
+  const handleSelectHistoryItem = (entry: HistoryEntry) => {
+    const concept = concepts.find((c) => c.id === entry.id);
     if (!concept) return;
 
-    handleSelectConcept(concept);
+    handleSelectConcept(concept, "j_History");
   };
 
   const relatedConcepts =
@@ -426,7 +1036,8 @@ function App() {
           .sort((a, b) => b.angle - a.angle)
       : [];
 
-  const seenConceptIds = new Set(history);
+  const historyIds = history.map((entry) => entry.id);
+  const seenConceptIds = new Set(historyIds);
   const unseenConcepts = concepts.filter((concept) => !seenConceptIds.has(concept.id));
 
    // Next in Story: strongest unseen connections by strength
@@ -451,8 +1062,13 @@ function App() {
             return a.angle - b.angle;
           })
       : [];
-  const nextStoryConcepts = allNextStoryConcepts.slice(0, visibleNextStoryCount);
-  const hasMoreNextStoryConcepts = visibleNextStoryCount < allNextStoryConcepts.length;
+  const nextStoryConcepts = allNextStoryConcepts.slice(
+    nextStoryOffset,
+    nextStoryOffset + INITIAL_NEXT_STORY_COUNT
+  );
+  const canShowOtherSuggestions =
+    otherSuggestionClicks < MAX_OTHER_SUGGESTION_CLICKS &&
+    nextStoryOffset + INITIAL_NEXT_STORY_COUNT * 2 <= allNextStoryConcepts.length;
   const nextStoryConceptIds = new Set(nextStoryConcepts.map((rel) => rel.concept.id));
   const dialRelatedConcepts = relatedConcepts.filter(
     (rel) => !nextStoryConceptIds.has(rel.concept.id)
@@ -464,7 +1080,14 @@ function App() {
     if (unseenConcepts.length === 0) return;
 
     const randomIndex = Math.floor(Math.random() * unseenConcepts.length);
-    handleSelectConcept(unseenConcepts[randomIndex]);
+    handleSelectConcept(unseenConcepts[randomIndex], "j_Leap");
+  };
+
+  const handleShowOtherSuggestions = () => {
+    if (!canShowOtherSuggestions) return;
+
+    setNextStoryOffset((offset) => offset + INITIAL_NEXT_STORY_COUNT);
+    setOtherSuggestionClicks((clicks) => clicks + 1);
   };
 
   const getRelationColor = (angle: number) => {
@@ -487,8 +1110,8 @@ function App() {
     const angleRad = (Math.PI / 180) * flipped;
 
     return {
-      x: 10 + radius * Math.sin(angleRad),
-      y: 150 - radius * Math.cos(angleRad),
+      x: 20 + radius * Math.sin(angleRad),
+      y: 185 - radius * Math.cos(angleRad),
     };
   };
 
@@ -499,72 +1122,260 @@ function App() {
   //   return `M10,150 L${start.x},${start.y} A${radius},${radius} 0 0,1 ${end.x},${end.y} Z`;
   // };
 
+  const dialOrigin = { x: 20, y: 185 };
   const g_radius = 150; // global radius for dial points
   const displayedHistory = history
-    .map((id, index) => ({ id, index }))
+    .map((entry, index) => ({ ...entry, index }))
     .reverse();
 
   return (
     <div className="app-container">
       <header className="app-header">
-        <h2>FDK Triangulator</h2>
-        <label className="file-button">
-          Choose File
-          <input
-            type="file"
-            accept=".xlsx, .xls"
-            onClick={(e) => {
-              e.currentTarget.value = "";
-            }}
-            onChange={handleFileUpload}
-            style={{ display: "none" }}
-          />
-        </label>
+        <h2>FDK Network of Knowledge</h2>
+        <div className="tab-bar" role="tablist" aria-label="Main views">
+          <button
+            className={activeTab === "home" ? "active" : ""}
+            onClick={() => setActiveTab("home")}
+            role="tab"
+            aria-selected={activeTab === "home"}
+          >
+            Explore
+          </button>
+          <button
+            className={activeTab === "graph" ? "active" : ""}
+            onClick={() => setActiveTab("graph")}
+            role="tab"
+            aria-selected={activeTab === "graph"}
+          >
+            Trace
+          </button>
+        </div>
+        {showSearch && (
+          <form className="title-search" onSubmit={handleSearchSubmit}>
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search Concept titles"
+              aria-label="Search concept titles"
+            />
+            <button type="submit" aria-label="Search">
+              &#128269;
+            </button>
+          </form>
+        )}
+        <details
+          className="app-menu"
+          open={isMenuOpen}
+          ref={menuRef}
+          onToggle={(event) => setIsMenuOpen(event.currentTarget.open)}
+        >
+          <summary>Settings</summary>
+          <div className="app-menu-panel">
+            <label className="file-button">
+              Choose File
+              <input
+                type="file"
+                accept=".xlsx, .xls"
+                onClick={(e) => {
+                  e.currentTarget.value = "";
+                }}
+                onChange={handleFileUpload}
+                style={{ display: "none" }}
+              />
+            </label>
+            <label className="menu-check">
+              <input
+                type="checkbox"
+                checked={showTriangles}
+                onChange={(e) => {
+                  setShowTriangles(e.target.checked);
+                  setIsMenuOpen(false);
+                }}
+              />
+              Show Triangles
+            </label>
+            <label className="menu-check">
+              <input
+                type="checkbox"
+                checked={showToc}
+                onChange={(e) => {
+                  setShowToc(e.target.checked);
+                  setIsMenuOpen(false);
+                }}
+              />
+              Show TOC
+            </label>
+            <label className="menu-check">
+              <input
+                type="checkbox"
+                checked={showRelatedConcepts}
+                onChange={(e) => {
+                  setShowRelatedConcepts(e.target.checked);
+                  setIsMenuOpen(false);
+                }}
+              />
+              Show Related Concepts
+            </label>
+            <label className="menu-check">
+              <input
+                type="checkbox"
+                checked={showSearch}
+                onChange={(e) => {
+                  setShowSearch(e.target.checked);
+                  if (!e.target.checked) {
+                    setShowSearchDialog(false);
+                    setSearchQuery("");
+                  }
+                  setIsMenuOpen(false);
+                }}
+              />
+              Show Search box
+            </label>
+            <label className="menu-check">
+              <input
+                type="checkbox"
+                checked={showStrengthsAndAngles}
+                onChange={(e) => {
+                  setShowStrengthsAndAngles(e.target.checked);
+                  setIsMenuOpen(false);
+                }}
+              />
+              Show strengths and angles
+            </label>
+            <label className="menu-check">
+              <input
+                type="checkbox"
+                checked={showHistoryQa}
+                onChange={(e) => {
+                  setShowHistoryQa(e.target.checked);
+                  setIsMenuOpen(false);
+                }}
+              />
+              Show History QA
+            </label>
+            <button
+              className="menu-item-button"
+              onClick={() => {
+                setShowClearHistoryConfirm(true);
+                setIsMenuOpen(false);
+              }}
+            >
+              Clear History
+            </button>
+            <button
+              className="menu-item-button"
+              onClick={() => {
+                setShowAbout(true);
+                setIsMenuOpen(false);
+              }}
+            >
+              About
+            </button>
+          </div>
+        </details>
         <span>{fileName}</span>
         {loadError && <span className="load-error">{loadError}</span>}
-        <label>
-          <input
-            type="checkbox"
-            checked={showTriangles}
-            onChange={(e) => setShowTriangles(e.target.checked)}
-          />
-          Show Triangles
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={showRelatedConcepts}
-            onChange={(e) => setShowRelatedConcepts(e.target.checked)}
-          />
-          Show Related Concepts
-        </label>
       </header>
 
-      <div className="pane-container">
-        {/* Left Pane */}
-        <div className="pane left-pane">
-          <h3>Concepts</h3>
-          <ul>
-            {concepts.map((c) => (
-              <li
-                key={c.id}
-                ref={(el) => {
-                  tocItemRefs.current[c.id] = el;
-                }}
-                className={
-                  selectedConcept?.id === c.id
-                    ? "selected"
-                    : history.includes(c.id)
-                    ? "visited"
-                    : ""
-                }
-                onClick={() => handleSelectConcept(c)}
-              >
-                {c.title}
-              </li>
-            ))} 
-          </ul>
+      {showAbout && (
+        <div className="about-box">
+          <button
+            className="about-close"
+            onClick={() => setShowAbout(false)}
+            aria-label="Close About"
+          >
+            x
+          </button>
+          <p className="about-title">FDK Network of Knowledge</p>
+          <p>All content is created by Carie Fox.</p>
+          <p>Copyright Carie Fox 2026. All rights reserved</p>
         </div>
+      )}
+
+      {showClearHistoryConfirm && (
+        <div
+          className="confirm-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirm clear history"
+        >
+          <p>
+            This will clear all reading history!
+            <br />
+            <br />
+            Do you want to proceed?
+          </p>
+          <div className="confirm-actions">
+            <button
+              onClick={() => {
+                handleClearHistory();
+                setShowClearHistoryConfirm(false);
+              }}
+            >
+              Yes
+            </button>
+            <button onClick={() => setShowClearHistoryConfirm(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showSearchDialog && (
+        <div className="search-dialog" role="dialog" aria-modal="true" aria-label="Search results">
+          <button
+            className="search-close"
+            onClick={() => setShowSearchDialog(false)}
+            aria-label="Close search results"
+          >
+            x
+          </button>
+          <h3>Search Results</h3>
+          {searchResults.length === 0 ? (
+            <p className="search-empty">No matching titles.</p>
+          ) : (
+            <ul>
+              {searchResults.map((concept) => (
+                <li key={concept.id}>
+                  <button onClick={() => handleSelectSearchResult(concept)}>
+                    {concept.title}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {activeTab === "home" && (
+      <div className="pane-container" role="tabpanel" aria-label="Home">
+        {/* Left Pane */}
+        {showToc && (
+          <div className="pane left-pane">
+            <h3>Concepts</h3>
+            <ul>
+              {concepts.map((c) => (
+                <li
+                  key={c.id}
+                  ref={(el) => {
+                    tocItemRefs.current[c.id] = el;
+                  }}
+                  className={
+                    selectedConcept?.id === c.id
+                      ? "selected"
+                      : historyIds.includes(c.id)
+                      ? "visited"
+                      : ""
+                  }
+                  onClick={() => handleSelectConcept(c, "j_TOC")}
+                >
+                  {c.title}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/* Middle Pane */}
         <div className="pane middle-pane">
@@ -668,29 +1479,29 @@ function App() {
                   <li
                     key={rel.concept.id}
                     className="next-story-item"
-                    onClick={() => handleSelectConcept(rel.concept)}
+                    style={{ backgroundColor: getRelationColor(rel.angle) }}
+                    onClick={() =>
+                      handleSelectConcept(rel.concept, `j_NextinStory_${nextStoryOffset + idx + 1}`)
+                    }
                   >
-                    {rel.concept.title}{" "}
-                    <span className="next-story-meta">
-                      (strength {rel.strength}, angle {rel.angle})
-                    </span>
+                    {rel.concept.title}
+                    {showStrengthsAndAngles && (
+                      <span className="next-story-meta">
+                        {" "}(strength {rel.strength}, angle {rel.angle})
+                      </span>
+                    )}
                   </li>
                 ))}
               </ul>
             )}
 
-            {hasMoreNextStoryConcepts && (
-              <button
-                className="other-suggestions-button"
-                onClick={() =>
-                  setVisibleNextStoryCount((count) =>
-                    Math.min(count + 2, allNextStoryConcepts.length)
-                  )
-                }
-              >
-                Want other suggestions?
-              </button>
-            )}
+            <button
+              className="other-suggestions-button"
+              onClick={handleShowOtherSuggestions}
+              disabled={!canShowOtherSuggestions}
+            >
+              Want other suggestions?
+            </button>
 
             <div className="leap-section">
               <p>Don't like any of our suggestions?</p>
@@ -717,9 +1528,10 @@ function App() {
                       margin: "0.1rem 0",
                       lineHeight: "1.2",
                     }}
-                    onClick={() => handleSelectConcept(rel.concept)}
+                    onClick={() => handleSelectConcept(rel.concept, "j_Related")}
                   >
-                    {rel.concept.title} ({rel.angle})
+                    {rel.concept.title}
+                    {showStrengthsAndAngles && ` (${rel.angle})`}
                   </li>
                 ))}
               </ul>
@@ -731,23 +1543,33 @@ function App() {
             <div className="semidisc-container">
               <svg
                 className="semidisc-svg"
-                width="330"
+                width="418"
                 height="330"
-                viewBox="0 0 330 330"
+                viewBox="-50 -8 430 386"
+                preserveAspectRatio="xMinYMid meet"
               >
-                <path d="M10,150 L10,0 A150,150 0 0,1 152,73 Z" fill="#ffb6c1" />
-                <path d="M10,150 L152,73 A150,150 0 0,1 154,226 Z" fill="#90ee90" />
-                <path d="M10,150 L154,226 A150,150 0 0,1 10,300 Z" fill="#add8e6" />
+                <path
+                  d={`M${dialOrigin.x},${dialOrigin.y} L${polarToCartesian(180, g_radius).x},${polarToCartesian(180, g_radius).y} A${g_radius},${g_radius} 0 0,1 ${polarToCartesian(120, g_radius).x},${polarToCartesian(120, g_radius).y} Z`}
+                  fill="#ffb6c1"
+                />
+                <path
+                  d={`M${dialOrigin.x},${dialOrigin.y} L${polarToCartesian(120, g_radius).x},${polarToCartesian(120, g_radius).y} A${g_radius},${g_radius} 0 0,1 ${polarToCartesian(60, g_radius).x},${polarToCartesian(60, g_radius).y} Z`}
+                  fill="#90ee90"
+                />
+                <path
+                  d={`M${dialOrigin.x},${dialOrigin.y} L${polarToCartesian(60, g_radius).x},${polarToCartesian(60, g_radius).y} A${g_radius},${g_radius} 0 0,1 ${polarToCartesian(0, g_radius).x},${polarToCartesian(0, g_radius).y} Z`}
+                  fill="#add8e6"
+                />
 
-                <circle cx="10" cy="150" r="5" fill="darkblue" stroke="black" />
+                <circle cx={dialOrigin.x} cy={dialOrigin.y} r="5" fill="darkblue" stroke="black" />
 
                 {dialRelatedConcepts.map((rel) => {
                   const pos = polarToCartesian(rel.angle, g_radius-10);
                   return (
                     <g key={`related-${rel.concept.id}`}>
                       <line
-                        x1="10"
-                        y1="150"
+                        x1={dialOrigin.x}
+                        y1={dialOrigin.y}
                         x2={pos.x}
                         y2={pos.y}
                         stroke="black"
@@ -772,18 +1594,29 @@ function App() {
 
                 {nextStoryConcepts.map((rel, idx) => {
                   const pos = polarToCartesian(rel.angle, g_radius-10);
-                  const labelPos = polarToCartesian(rel.angle, g_radius+12);
-                  let yOffset = 0;
+                  const labelPos = polarToCartesian(rel.angle, g_radius+28);
+                  let yOffset = 13 * (rel.angle / 180);
+                  let xOffset = 0;
+                  const textAnchor = rel.angle > 45 && rel.angle < 135 ? "end" : "start";
+                  const anchorOffset = textAnchor === "start" ? 10 : textAnchor === "end" ? -10 : 0;
                   for (let j = 0; j < idx; j++) {
                     if (Math.abs(rel.angle - nextStoryConcepts[j].angle) < 15) {
                       yOffset += 12;
                     }
                   }
+                  if (
+                    idx < 2 &&
+                    nextStoryConcepts.length > 1 &&
+                    Math.abs(nextStoryConcepts[0].angle - nextStoryConcepts[1].angle) < 18
+                  ) {
+                    xOffset = idx === 0 ? -18 : 18;
+                    yOffset += idx === 0 ? -20 : -6;
+                  }
                   return (
                     <g key={`next-story-${rel.concept.id}`}>
                       <line
-                        x1="10"
-                        y1="150"
+                        x1={dialOrigin.x}
+                        y1={dialOrigin.y}
                         x2={pos.x}
                         y2={pos.y}
                         stroke="black"
@@ -797,10 +1630,11 @@ function App() {
                       />
                       <text
                         className="semidisc-next-story-label"
-                        x={labelPos.x}
+                        x={labelPos.x + anchorOffset + xOffset}
                         y={labelPos.y + yOffset}
                         fontSize="13"
                         fill="black"
+                        textAnchor={textAnchor}
                       >
                         {rel.concept.title}
                       </text>
@@ -840,15 +1674,16 @@ function App() {
           <div className="read-order">
             <h3>Reading History</h3>
             <ul>
-              {displayedHistory.map(({ id, index }) => {
+              {displayedHistory.map(({ id, choice, index }) => {
                 const c = concepts.find((c) => c.id === id);
                 return (
                   <li
                     key={index}
                     className={selectedConcept?.id === id ? "selected" : ""}
-                    onClick={() => handleSelectHistoryItem(id)}
+                    onClick={() => handleSelectHistoryItem({ id, choice })}
                   >
-                    {id} - {c?.title}
+                    {showHistoryQa && `${id} - ${choice} - `}
+                    {c?.title}
                   </li>
                 );
               })}
@@ -857,6 +1692,23 @@ function App() {
           </div>
         </div>
       </div>
+      )}
+
+      {activeTab === "graph" && (
+        <div className="graph-tab" role="tabpanel" aria-label="Graph">
+          <ConceptGraph
+            concepts={concepts}
+            angleMatrix={angleMatrix}
+            strengthMatrix={strengthMatrix}
+            selectedConcept={selectedConcept}
+            history={history}
+            nextStoryConcepts={nextStoryConcepts}
+            getRelationColor={getRelationColor}
+            onPreviewConcept={handlePreviewGraphConcept}
+            onOpenConcept={handleOpenGraphConcept}
+          />
+        </div>
+      )}
     </div>
   );
 }
