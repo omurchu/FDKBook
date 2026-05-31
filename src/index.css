@@ -414,6 +414,72 @@ body, html, #root {
   background-color: #eee;
 }
 
+.comment-form-section {
+  margin-top: 1.25rem;
+  border-top: 1px solid #ccc;
+  padding-top: 0.75rem;
+}
+
+.comment-form-section h3 {
+  margin: 0 0 0.25rem;
+}
+
+.comment-form-section p {
+  margin: 0 0 0.6rem;
+  color: #666;
+  font-size: 0.85rem;
+}
+
+.comment-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.comment-form textarea {
+  width: 100%;
+  min-height: 5.5rem;
+  padding: 0.55rem;
+  border: 1px solid #aaa;
+  border-radius: 4px;
+  box-sizing: border-box;
+  font: inherit;
+  resize: vertical;
+}
+
+.comment-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.comment-form-actions button {
+  padding: 0.4rem 0.8rem;
+  border: 1px solid #888;
+  border-radius: 4px;
+  background: #fff;
+  color: #222;
+  cursor: pointer;
+}
+
+.comment-form-actions button:hover:not(:disabled) {
+  background: #eee;
+}
+
+.comment-form-actions button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.comment-form-actions span {
+  color: #267326;
+  font-size: 0.85rem;
+}
+
+.comment-form-response {
+  display: none;
+}
+
 
 /* Make the right pane a column flexbox */
 .pane.right-pane {

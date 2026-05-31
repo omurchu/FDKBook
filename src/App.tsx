@@ -52,11 +52,15 @@ const INITIAL_NEXT_STORY_COUNT = 2;
 const MAX_OTHER_SUGGESTION_CLICKS = 2;
 const INITIAL_HISTORY_CHOICE = "j_Start";
 const NEXT_STORY_ITEM_COLOR = "#fff8c6";
+const DIAL_NEUTRAL_COLOR = "#e6e6e6";
 const GRAPH_WIDTH = 980;
 const GRAPH_HEIGHT = 640;
 const GRAPH_CENTER_X = GRAPH_WIDTH / 2 + 50;
 const GRAPH_CENTER_Y = GRAPH_HEIGHT / 2;
 const GRAPH_NODE_CLICK_ZOOM = 1.1;
+const COMMENT_FORM_ACTION =
+  "https://docs.google.com/forms/d/e/1FAIpQLSfRsy9X9bVI-CdppeEJzgSb3ZbIa7dqoELENtiVRuVue1M4lw/formResponse";
+const MAX_READER_HISTORY_LENGTH = 2000;
 
 const getConceptIdFromUrl = () => {
   const id = Number(new URLSearchParams(window.location.search).get("concept"));
@@ -267,6 +271,8 @@ function ConceptGraph({
   getRelationColor,
   onPreviewConcept,
   onOpenConcept,
+  pathMode,
+  onPathModeChange,
 }: {
   concepts: Concept[];
   angleMatrix: number[][];
@@ -277,12 +283,13 @@ function ConceptGraph({
   getRelationColor: (angle: number) => string;
   onPreviewConcept: (concept: Concept) => void;
   onOpenConcept: (concept: Concept) => void;
+  pathMode: PathMode;
+  onPathModeChange: (mode: PathMode) => void;
 }) {
   const [zoomScale, setZoomScale] = React.useState(1);
   const [focusConceptId, setFocusConceptId] = React.useState<number | null>(null);
   const [hoveredGraphConceptId, setHoveredGraphConceptId] = React.useState<number | null>(null);
   const [minimumStrength, setMinimumStrength] = React.useState(4);
-  const [pathMode, setPathMode] = React.useState<PathMode>("simple");
   const [graphPan, setGraphPan] = React.useState({ x: 0, y: 0 });
   const [isDraggingGraph, setIsDraggingGraph] = React.useState(false);
   const clickTimerRef = React.useRef<number | null>(null);
@@ -529,7 +536,7 @@ function ConceptGraph({
                 name="path-mode"
                 value={option.value}
                 checked={pathMode === option.value}
-                onChange={() => setPathMode(option.value as PathMode)}
+                onChange={() => onPathModeChange(option.value as PathMode)}
               />
               {option.label}
             </label>
@@ -757,6 +764,7 @@ function App() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const [activeTab, setActiveTab] = useState<ActiveTab>("home");
+  const [pathMode, setPathMode] = useState<PathMode>("simple");
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
   const [showAbout, setShowAbout] = useState<boolean>(false);
   const [showClearHistoryConfirm, setShowClearHistoryConfirm] = useState<boolean>(false);
@@ -765,6 +773,7 @@ function App() {
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [showSearchDialog, setShowSearchDialog] = useState<boolean>(false);
   const [showTriangles, setShowTriangles] = useState<boolean>(true);
+  const [showDialColors, setShowDialColors] = useState<boolean>(false);
   const [showToc, setShowToc] = useState<boolean>(false);
   const [showRelatedConcepts, setShowRelatedConcepts] = useState<boolean>(false);
   const [showStrengthsAndAngles, setShowStrengthsAndAngles] = useState<boolean>(false);
@@ -773,6 +782,9 @@ function App() {
   const [otherSuggestionClicks, setOtherSuggestionClicks] = useState<number>(0);
   const [fileName, setFileName] = useState<string>("No file chosen");
   const [loadError, setLoadError] = useState<string>("");
+  const [feedbackComment, setFeedbackComment] = useState<string>("");
+  const [commentSubmissionPending, setCommentSubmissionPending] = useState<boolean>(false);
+  const [commentSubmitted, setCommentSubmitted] = useState<boolean>(false);
 
   const historyEndRef = useRef<HTMLDivElement | null>(null);
   const tocItemRefs = useRef<Record<number, HTMLLIElement | null>>({});
@@ -1127,11 +1139,24 @@ function App() {
   const displayedHistory = history
     .map((entry, index) => ({ ...entry, index }))
     .reverse();
+  const fullReaderHistory = history
+    .map((entry) => {
+      const concept = concepts.find((item) => item.id === entry.id);
+      return `${entry.id}: ${concept?.title ?? "Unknown concept"} [${entry.choice}]`;
+    })
+    .join(" > ");
+  const omittedHistoryPrefix = "[Earlier history omitted] ";
+  const readerHistory =
+    fullReaderHistory.length <= MAX_READER_HISTORY_LENGTH
+      ? fullReaderHistory
+      : `${omittedHistoryPrefix}${fullReaderHistory.slice(
+          fullReaderHistory.length - MAX_READER_HISTORY_LENGTH + omittedHistoryPrefix.length
+        )}`;
 
   return (
     <div className="app-container">
       <header className="app-header">
-        <h2>FDK Network of Knowledge</h2>
+        <h2>The Book of Your Body Wisdom</h2>
         <div className="tab-bar" role="tablist" aria-label="Main views">
           <button
             className={activeTab === "home" ? "active" : ""}
@@ -1194,6 +1219,17 @@ function App() {
                 }}
               />
               Show Triangles
+            </label>
+            <label className="menu-check">
+              <input
+                type="checkbox"
+                checked={showDialColors}
+                onChange={(e) => {
+                  setShowDialColors(e.target.checked);
+                  setIsMenuOpen(false);
+                }}
+              />
+              Show dial colors
             </label>
             <label className="menu-check">
               <input
@@ -1463,6 +1499,70 @@ function App() {
               Forward
             </button>
           </div>
+          <div className="comment-form-section">
+            <h3>What do you think?</h3>
+            <p>
+              This is a feedback area for Wanderers exploring the Book of Your Body Wisdom app.
+            </p>
+            <form
+              className="comment-form"
+              action={COMMENT_FORM_ACTION}
+              method="POST"
+              target="comment-form-response"
+              onSubmit={() => {
+                setCommentSubmissionPending(true);
+                setCommentSubmitted(false);
+              }}
+            >
+              <textarea
+                name="entry.1214227783"
+                value={feedbackComment}
+                onChange={(event) => {
+                  setFeedbackComment(event.target.value);
+                  setCommentSubmitted(false);
+                }}
+                placeholder="Your thoughts here"
+                aria-label="Comment"
+                rows={4}
+                required
+              />
+              <input
+                type="hidden"
+                name="entry.1883454059"
+                value={selectedConcept?.id ?? ""}
+              />
+              <input
+                type="hidden"
+                name="entry.1305451169"
+                value={selectedConcept?.title ?? ""}
+              />
+              <input
+                type="hidden"
+                name="entry.1973485510"
+                value={readerHistory}
+              />
+              <div className="comment-form-actions">
+                <button type="submit" disabled={commentSubmissionPending}>
+                  {commentSubmissionPending ? "Submitting..." : "Submit"}
+                </button>
+                {commentSubmitted && (
+                  <span role="status">Thank you. Your comment was submitted.</span>
+                )}
+              </div>
+            </form>
+            <iframe
+              className="comment-form-response"
+              name="comment-form-response"
+              title="Comment submission response"
+              onLoad={() => {
+                if (!commentSubmissionPending) return;
+
+                setFeedbackComment("");
+                setCommentSubmissionPending(false);
+                setCommentSubmitted(true);
+              }}
+            />
+          </div>
         </div>
 
         {/* Right Pane */}
@@ -1550,15 +1650,15 @@ function App() {
               >
                 <path
                   d={`M${dialOrigin.x},${dialOrigin.y} L${polarToCartesian(180, g_radius).x},${polarToCartesian(180, g_radius).y} A${g_radius},${g_radius} 0 0,1 ${polarToCartesian(120, g_radius).x},${polarToCartesian(120, g_radius).y} Z`}
-                  fill="#ffb6c1"
+                  fill={showDialColors ? "#ffb6c1" : DIAL_NEUTRAL_COLOR}
                 />
                 <path
                   d={`M${dialOrigin.x},${dialOrigin.y} L${polarToCartesian(120, g_radius).x},${polarToCartesian(120, g_radius).y} A${g_radius},${g_radius} 0 0,1 ${polarToCartesian(60, g_radius).x},${polarToCartesian(60, g_radius).y} Z`}
-                  fill="#90ee90"
+                  fill={showDialColors ? "#90ee90" : DIAL_NEUTRAL_COLOR}
                 />
                 <path
                   d={`M${dialOrigin.x},${dialOrigin.y} L${polarToCartesian(60, g_radius).x},${polarToCartesian(60, g_radius).y} A${g_radius},${g_radius} 0 0,1 ${polarToCartesian(0, g_radius).x},${polarToCartesian(0, g_radius).y} Z`}
-                  fill="#add8e6"
+                  fill={showDialColors ? "#add8e6" : DIAL_NEUTRAL_COLOR}
                 />
 
                 <circle cx={dialOrigin.x} cy={dialOrigin.y} r="5" fill="darkblue" stroke="black" />
@@ -1580,7 +1680,7 @@ function App() {
                         cx={pos.x}
                         cy={pos.y}
                         r="5"
-                        fill={getRelationColor(rel.angle)}
+                        fill={showDialColors ? getRelationColor(rel.angle) : DIAL_NEUTRAL_COLOR}
                         stroke="black"
                         tabIndex={0}
                         onMouseEnter={() => setHoveredDialConceptId(rel.concept.id)}
@@ -1706,6 +1806,8 @@ function App() {
             getRelationColor={getRelationColor}
             onPreviewConcept={handlePreviewGraphConcept}
             onOpenConcept={handleOpenGraphConcept}
+            pathMode={pathMode}
+            onPathModeChange={setPathMode}
           />
         </div>
       )}
