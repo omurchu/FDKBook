@@ -102,6 +102,37 @@ const getGraphHistoryPathClass = (choice: string) => {
   return "graph-history-path-next-story";
 };
 
+const renderTextWithLinks = (text: string) => {
+  const nodes: React.ReactNode[] = [];
+  const linkPattern = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = linkPattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      nodes.push(text.slice(lastIndex, match.index));
+    }
+
+    nodes.push(
+      <a
+        key={`content-link-${match.index}`}
+        href={match[2]}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        {match[1]}
+      </a>
+    );
+    lastIndex = linkPattern.lastIndex;
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+
+  return nodes;
+};
+
 const isNumericLike = (v: any) => {
   const s = String(v ?? "").trim();
   if (!s) return false;
@@ -1801,7 +1832,9 @@ function App() {
             </div>
           )}
 
-          <div className="content-box">{selectedConcept?.entire}</div>
+          <div className="content-box">
+            {selectedConcept?.entire ? renderTextWithLinks(selectedConcept.entire) : null}
+          </div>
           <div className="nav-buttons">
             <button onClick={handleBack} disabled={historyIndex <= 0}>
               Back

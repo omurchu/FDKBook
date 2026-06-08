@@ -471,6 +471,15 @@ body, html, #root {
   background-color: #fafafa;
 }
 
+.middle-pane .content-box a {
+  color: #1f5f9f;
+  text-decoration: underline;
+}
+
+.middle-pane .content-box a:hover {
+  color: #153f6a;
+}
+
 
 /* Styled Choose File button */
 .file-button {
