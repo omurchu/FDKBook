@@ -399,6 +399,8 @@ body, html, #root {
 
 .nav-buttons {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 0.5rem;
 }
 
@@ -412,6 +414,48 @@ body, html, #root {
 
 .nav-buttons button:hover {
   background-color: #eee;
+}
+
+.nav-buttons button:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.quick-feedback-divider {
+  width: 1px;
+  align-self: stretch;
+  min-height: 1.7rem;
+  margin: 0 0.15rem;
+  background-color: #c9c9c9;
+}
+
+.quick-feedback-label {
+  color: #555;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.nav-buttons button.quick-feedback-button {
+  width: 2.15rem;
+  min-width: 2.15rem;
+  padding: 0.35rem 0;
+  border-color: #6f8d6f;
+  background-color: #f8fff8;
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.nav-buttons button.quick-feedback-button:hover:not(:disabled) {
+  background-color: #e9f6e9;
+}
+
+.nav-buttons button.journey-feedback-button {
+  border-color: #6d86a8;
+  background-color: #f4f8ff;
+}
+
+.nav-buttons button.journey-feedback-button:hover:not(:disabled) {
+  background-color: #e7f0ff;
 }
 
 .comment-form-section {
@@ -434,6 +478,44 @@ body, html, #root {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+.alpha-tester-name-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.alpha-tester-name-prompt {
+  flex-basis: 100%;
+}
+
+.alpha-tester-name-row label {
+  color: #555;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.alpha-tester-name-row input {
+  width: min(100%, 14rem);
+  padding: 0.35rem 0.45rem;
+  border: 1px solid #aaa;
+  border-radius: 4px;
+  box-sizing: border-box;
+  font: inherit;
+}
+
+.alpha-tester-name-error {
+  color: #b00020;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.comment-textarea-label {
+  color: #555;
+  font-size: 0.85rem;
+  font-weight: 600;
 }
 
 .comment-form textarea {

@@ -58,9 +58,12 @@ const GRAPH_HEIGHT = 640;
 const GRAPH_CENTER_X = GRAPH_WIDTH / 2 + 50;
 const GRAPH_CENTER_Y = GRAPH_HEIGHT / 2;
 const GRAPH_NODE_CLICK_ZOOM = 1.1;
+const APP_TITLE = "Your Body Wisdom Encyclopedia";
+// Former title: "The Book of Your Body Wisdom"
 const COMMENT_FORM_ACTION =
   "https://docs.google.com/forms/d/e/1FAIpQLSfRsy9X9bVI-CdppeEJzgSb3ZbIa7dqoELENtiVRuVue1M4lw/formResponse";
 const MAX_READER_HISTORY_LENGTH = 2000;
+const ALPHA_TESTER_NAME_STORAGE_KEY = "fdkAlphaTesterName";
 
 const getConceptIdFromUrl = () => {
   const id = Number(new URLSearchParams(window.location.search).get("concept"));
@@ -783,12 +786,22 @@ function App() {
   const [fileName, setFileName] = useState<string>("No file chosen");
   const [loadError, setLoadError] = useState<string>("");
   const [feedbackComment, setFeedbackComment] = useState<string>("");
+  const [likeConceptContent, setLikeConceptContent] = useState<"" | "Yes" | "No">("");
+  const [likeHowYouGotHere, setLikeHowYouGotHere] = useState<"" | "Yes" | "No">("");
+  const [alphaTesterName, setAlphaTesterName] = useState<string>(() =>
+    window.sessionStorage.getItem(ALPHA_TESTER_NAME_STORAGE_KEY) ?? ""
+  );
+  const [alphaTesterNameSubmitted, setAlphaTesterNameSubmitted] = useState<boolean>(() =>
+    Boolean(window.sessionStorage.getItem(ALPHA_TESTER_NAME_STORAGE_KEY))
+  );
+  const [alphaTesterNameError, setAlphaTesterNameError] = useState<string>("");
   const [commentSubmissionPending, setCommentSubmissionPending] = useState<boolean>(false);
   const [commentSubmitted, setCommentSubmitted] = useState<boolean>(false);
 
   const historyEndRef = useRef<HTMLDivElement | null>(null);
   const tocItemRefs = useRef<Record<number, HTMLLIElement | null>>({});
   const menuRef = useRef<HTMLDetailsElement | null>(null);
+  const commentFormRef = useRef<HTMLFormElement | null>(null);
 
   const loadFromArrayBuffer = React.useCallback((buffer: ArrayBuffer, sourceLabel: string) => {
     const wb = XLSX.read(buffer, { type: "array" });
@@ -856,7 +869,7 @@ function App() {
         behavior: "smooth",
       });
     }, 0);
-  }, [selectedConcept, activeTab]);
+  }, [selectedConcept, historyIndex, activeTab]);
 
   React.useEffect(() => {
     if (concepts.length === 0) return;
@@ -1029,11 +1042,73 @@ function App() {
     }
   };
 
-  const handleSelectHistoryItem = (entry: HistoryEntry) => {
+  const handleSelectHistoryItem = (entry: HistoryEntry & { index: number }) => {
     const concept = concepts.find((c) => c.id === entry.id);
     if (!concept) return;
 
-    handleSelectConcept(concept, "j_History");
+    setHistoryIndex(entry.index);
+    setSelectedConcept(concept);
+    updateConceptUrl(concept.id);
+  };
+
+  const handleQuickFeedback = (
+    field: "content" | "journey",
+    value: "Yes" | "No"
+  ) => {
+    if (commentSubmissionPending) return;
+
+    const fallbackComment =
+      field === "content"
+        ? `Like the content? ${value}`
+        : `Like how you got here? ${value}`;
+
+    if (field === "content") {
+      setLikeConceptContent(value);
+      setLikeHowYouGotHere("");
+    } else {
+      setLikeConceptContent("");
+      setLikeHowYouGotHere(value);
+    }
+
+    if (!feedbackComment.trim()) {
+      setFeedbackComment(fallbackComment);
+    }
+    setCommentSubmitted(false);
+
+    window.setTimeout(() => {
+      commentFormRef.current?.requestSubmit();
+    }, 0);
+  };
+
+  const handleCommentSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    const trimmedName = alphaTesterName.trim();
+
+    if (trimmedName.length < 3) {
+      event.preventDefault();
+      setAlphaTesterNameError("Please enter a name at least three characters long.");
+      return;
+    }
+
+    if (!feedbackComment.trim() && !likeConceptContent && !likeHowYouGotHere) {
+      event.preventDefault();
+      setFeedbackComment(`Alpha tester name: ${trimmedName}`);
+      setAlphaTesterNameError("");
+      window.sessionStorage.setItem(ALPHA_TESTER_NAME_STORAGE_KEY, trimmedName);
+      setAlphaTesterName(trimmedName);
+      setAlphaTesterNameSubmitted(true);
+
+      window.setTimeout(() => {
+        commentFormRef.current?.requestSubmit();
+      }, 0);
+      return;
+    }
+
+    window.sessionStorage.setItem(ALPHA_TESTER_NAME_STORAGE_KEY, trimmedName);
+    setAlphaTesterName(trimmedName);
+    setAlphaTesterNameSubmitted(true);
+    setAlphaTesterNameError("");
+    setCommentSubmissionPending(true);
+    setCommentSubmitted(false);
   };
 
   const relatedConcepts =
@@ -1048,8 +1123,10 @@ function App() {
           .sort((a, b) => b.angle - a.angle)
       : [];
 
+  const activeHistory = historyIndex >= 0 ? history.slice(0, historyIndex + 1) : [];
+  const activeHistoryIds = activeHistory.map((entry) => entry.id);
   const historyIds = history.map((entry) => entry.id);
-  const seenConceptIds = new Set(historyIds);
+  const seenConceptIds = new Set(activeHistoryIds);
   const unseenConcepts = concepts.filter((concept) => !seenConceptIds.has(concept.id));
 
    // Next in Story: strongest unseen connections by strength
@@ -1064,7 +1141,7 @@ function App() {
           .filter(
             (rel) =>
               rel.concept.id !== selectedConcept.id && // ignore self
-              !seenConceptIds.has(rel.concept.id) && // only concepts not yet seen this session
+              !seenConceptIds.has(rel.concept.id) && // only concepts not yet seen by this point in history
               rel.strength > 0 // only non-zero strength
           )
           .sort((a, b) => {
@@ -1078,6 +1155,17 @@ function App() {
     nextStoryOffset,
     nextStoryOffset + INITIAL_NEXT_STORY_COUNT
   );
+  const nextStorySubmission = nextStoryConcepts
+    .map((rel) => `${rel.concept.id}: ${rel.concept.title}`)
+    .join(" | ");
+  const trimmedAlphaTesterName = alphaTesterName.trim();
+  const trimmedFeedbackComment = feedbackComment.trim();
+  const commentSubmissionText =
+    trimmedAlphaTesterName && trimmedFeedbackComment
+      ? trimmedFeedbackComment.startsWith(`${trimmedAlphaTesterName}:`)
+        ? trimmedFeedbackComment
+        : `${trimmedAlphaTesterName}: ${trimmedFeedbackComment}`
+      : trimmedFeedbackComment;
   const canShowOtherSuggestions =
     otherSuggestionClicks < MAX_OTHER_SUGGESTION_CLICKS &&
     nextStoryOffset + INITIAL_NEXT_STORY_COUNT * 2 <= allNextStoryConcepts.length;
@@ -1156,7 +1244,7 @@ function App() {
   return (
     <div className="app-container">
       <header className="app-header">
-        <h2>The Book of Your Body Wisdom</h2>
+        <h2>{APP_TITLE}</h2>
         <div className="tab-bar" role="tablist" aria-label="Main views">
           <button
             className={activeTab === "home" ? "active" : ""}
@@ -1498,33 +1586,111 @@ function App() {
             <button onClick={handleForward} disabled={historyIndex >= history.length - 1}>
               Forward
             </button>
+            <span className="quick-feedback-divider" aria-hidden="true" />
+            <span className="quick-feedback-label">Like this content?</span>
+            <button
+              className="quick-feedback-button"
+              onClick={() => handleQuickFeedback("content", "Yes")}
+              disabled={commentSubmissionPending}
+              aria-label="Like this concept content"
+              title="Like this concept content"
+            >
+              <span aria-hidden="true">👍</span>
+            </button>
+            <button
+              className="quick-feedback-button"
+              onClick={() => handleQuickFeedback("content", "No")}
+              disabled={commentSubmissionPending}
+              aria-label="Dislike this concept content"
+              title="Dislike this concept content"
+            >
+              <span aria-hidden="true">👎</span>
+            </button>
+            <span className="quick-feedback-divider" aria-hidden="true" />
+            <span className="quick-feedback-label">Like how you got here?</span>
+            <button
+              className="quick-feedback-button journey-feedback-button"
+              onClick={() => handleQuickFeedback("journey", "Yes")}
+              disabled={commentSubmissionPending}
+              aria-label="Like how you got here"
+              title="Like how you got here"
+            >
+              <span aria-hidden="true">👍</span>
+            </button>
+            <button
+              className="quick-feedback-button journey-feedback-button"
+              onClick={() => handleQuickFeedback("journey", "No")}
+              disabled={commentSubmissionPending}
+              aria-label="Dislike how you got here"
+              title="Dislike how you got here"
+            >
+              <span aria-hidden="true">👎</span>
+            </button>
           </div>
           <div className="comment-form-section">
-            <h3>What do you think?</h3>
+            <h3>Alpha Testers</h3>
             <p>
-              This is a feedback area for Wanderers exploring the Book of Your Body Wisdom app.
+              Alpha testers, please comment at least every 5 entries or so, as this helps our nascent tracking system.
             </p>
             <form
+              ref={commentFormRef}
               className="comment-form"
               action={COMMENT_FORM_ACTION}
               method="POST"
               target="comment-form-response"
-              onSubmit={() => {
-                setCommentSubmissionPending(true);
-                setCommentSubmitted(false);
-              }}
+              onSubmit={handleCommentSubmit}
             >
+              <div className="alpha-tester-name-row">
+                {!alphaTesterNameSubmitted && (
+                  <p className="alpha-tester-name-prompt">
+                    Alpha Testers please enter your name and click the Submit button
+                  </p>
+                )}
+                <label htmlFor="alpha-tester-name">Alpha tester name</label>
+                <input
+                  id="alpha-tester-name"
+                  type="text"
+                  value={alphaTesterName}
+                  onChange={(event) => {
+                    setAlphaTesterName(event.target.value);
+                    setAlphaTesterNameSubmitted(false);
+                    setAlphaTesterNameError("");
+                    setCommentSubmitted(false);
+                  }}
+                  aria-label="Alpha tester name"
+                  aria-describedby={alphaTesterNameError ? "alpha-tester-name-error" : undefined}
+                  placeholder="Your name"
+                />
+              </div>
+              {alphaTesterNameError && (
+                <span
+                  id="alpha-tester-name-error"
+                  className="alpha-tester-name-error"
+                  role="alert"
+                >
+                  {alphaTesterNameError}
+                </span>
+              )}
+              <label className="comment-textarea-label" htmlFor="alpha-tester-comment">
+                Comments
+              </label>
               <textarea
-                name="entry.1214227783"
+                id="alpha-tester-comment"
                 value={feedbackComment}
                 onChange={(event) => {
                   setFeedbackComment(event.target.value);
+                  setLikeConceptContent("");
+                  setLikeHowYouGotHere("");
                   setCommentSubmitted(false);
                 }}
                 placeholder="Your thoughts here"
                 aria-label="Comment"
                 rows={4}
-                required
+              />
+              <input
+                type="hidden"
+                name="entry.1214227783"
+                value={commentSubmissionText}
               />
               <input
                 type="hidden"
@@ -1540,6 +1706,26 @@ function App() {
                 type="hidden"
                 name="entry.1973485510"
                 value={readerHistory}
+              />
+              <input
+                type="hidden"
+                name="entry.1292115929"
+                value={nextStorySubmission}
+              />
+              <input
+                type="hidden"
+                name="entry.1334530910"
+                value={likeConceptContent}
+              />
+              <input
+                type="hidden"
+                name="entry.1310490354"
+                value={likeHowYouGotHere}
+              />
+              <input
+                type="hidden"
+                name="entry.430995053"
+                value={trimmedAlphaTesterName}
               />
               <div className="comment-form-actions">
                 <button type="submit" disabled={commentSubmissionPending}>
@@ -1558,6 +1744,8 @@ function App() {
                 if (!commentSubmissionPending) return;
 
                 setFeedbackComment("");
+                setLikeConceptContent("");
+                setLikeHowYouGotHere("");
                 setCommentSubmissionPending(false);
                 setCommentSubmitted(true);
               }}
@@ -1780,7 +1968,7 @@ function App() {
                   <li
                     key={index}
                     className={selectedConcept?.id === id ? "selected" : ""}
-                    onClick={() => handleSelectHistoryItem({ id, choice })}
+                    onClick={() => handleSelectHistoryItem({ id, choice, index })}
                   >
                     {showHistoryQa && `${id} - ${choice} - `}
                     {c?.title}
