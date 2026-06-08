@@ -32,6 +32,18 @@ type HistoryEntry = {
   choice: string;
 };
 
+type MediaLinkStatus = "Good" | "Broken" | "Unknown";
+type MediaType = "Short Video" | "Long Video" | "PDF";
+
+type MediaLinkReportRow = {
+  id: number;
+  title: string;
+  mediaType: MediaType;
+  link: string;
+  status: MediaLinkStatus;
+  reportedError: string;
+};
+
 type GraphNode = {
   concept: Concept;
   x: number;
@@ -785,6 +797,10 @@ function App() {
   const [otherSuggestionClicks, setOtherSuggestionClicks] = useState<number>(0);
   const [fileName, setFileName] = useState<string>("No file chosen");
   const [loadError, setLoadError] = useState<string>("");
+  const [showMediaReport, setShowMediaReport] = useState<boolean>(false);
+  const [mediaReportRows, setMediaReportRows] = useState<MediaLinkReportRow[]>([]);
+  const [mediaReportRunning, setMediaReportRunning] = useState<boolean>(false);
+  const [mediaReportCopied, setMediaReportCopied] = useState<boolean>(false);
   const [feedbackComment, setFeedbackComment] = useState<string>("");
   const [likeConceptContent, setLikeConceptContent] = useState<"" | "Yes" | "No">("");
   const [likeHowYouGotHere, setLikeHowYouGotHere] = useState<"" | "Yes" | "No">("");
@@ -942,6 +958,135 @@ function App() {
     `https://www.youtube.com/embed/${id}?rel=0&modestbranding=1&playsinline=1&origin=${encodeURIComponent(
       window.location.origin
     )}`;
+
+  const checkYouTubeLink = async (url: string): Promise<Pick<MediaLinkReportRow, "status" | "reportedError">> => {
+    const normalizedUrl = withHttps(url);
+    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(
+      normalizedUrl
+    )}&format=json`;
+
+    try {
+      const response = await fetch(oembedUrl);
+      if (response.ok) {
+        return { status: "Good", reportedError: "" };
+      }
+
+      let reportedError = `YouTube oEmbed returned HTTP ${response.status}`;
+      try {
+        const errorText = (await response.text()).trim();
+        if (errorText) reportedError = errorText;
+      } catch {
+        // Keep the HTTP status if the response body cannot be read.
+      }
+
+      return { status: "Broken", reportedError };
+    } catch (error) {
+      return {
+        status: "Unknown",
+        reportedError: error instanceof Error ? error.message : "Unable to inspect YouTube link.",
+      };
+    }
+  };
+
+  const checkStandardLink = async (url: string): Promise<Pick<MediaLinkReportRow, "status" | "reportedError">> => {
+    const normalizedUrl = withHttps(url);
+
+    for (const method of ["HEAD", "GET"] as const) {
+      try {
+        const response = await fetch(normalizedUrl, {
+          method,
+          redirect: "follow",
+          cache: "no-store",
+        });
+
+        if (response.ok) {
+          return { status: "Good", reportedError: "" };
+        }
+
+        return {
+          status: "Broken",
+          reportedError: `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`,
+        };
+      } catch (error) {
+        if (method === "HEAD") continue;
+
+        return {
+          status: "Unknown",
+          reportedError: error instanceof Error ? error.message : "Unable to inspect link.",
+        };
+      }
+    }
+
+    return { status: "Unknown", reportedError: "Unable to inspect link." };
+  };
+
+  const checkMediaLink = (url: string) =>
+    isYouTube(url) ? checkYouTubeLink(url) : checkStandardLink(url);
+
+  const buildMediaReportRows = () =>
+    concepts.flatMap((concept) => {
+      const mediaLinks: Array<{ mediaType: MediaType; link: string | undefined }> = [
+        { mediaType: "Short Video", link: concept.shortVideo },
+        { mediaType: "Long Video", link: concept.longVideo },
+        { mediaType: "PDF", link: concept.pdf },
+      ];
+
+      return mediaLinks
+        .map(({ mediaType, link }) => ({ mediaType, link: String(link ?? "").trim() }))
+        .filter(({ link }) => Boolean(link))
+        .map(({ mediaType, link }) => ({
+          id: concept.id,
+          title: concept.title,
+          mediaType,
+          link,
+          status: "Unknown" as MediaLinkStatus,
+          reportedError: "",
+        }));
+    });
+
+  const handleTestMediaLinks = async () => {
+    const initialRows = buildMediaReportRows();
+    setMediaReportRows(initialRows);
+    setShowMediaReport(true);
+    setMediaReportCopied(false);
+    setIsMenuOpen(false);
+
+    if (initialRows.length === 0) return;
+
+    setMediaReportRunning(true);
+    const checkedRows: MediaLinkReportRow[] = [];
+
+    for (const row of initialRows) {
+      const result = await checkMediaLink(row.link);
+      const checkedRow = { ...row, ...result };
+      checkedRows.push(checkedRow);
+      setMediaReportRows([...checkedRows, ...initialRows.slice(checkedRows.length)]);
+    }
+
+    setMediaReportRunning(false);
+  };
+
+  const handleCopyMediaReport = async () => {
+    const header = ["ID", "Title", "Media_Type", "Link", "Status", "Reported Error"];
+    const escapeCell = (value: string | number) =>
+      String(value ?? "")
+        .replace(/\r?\n/g, " ")
+        .replace(/\t/g, " ");
+    const tableText = [header, ...mediaReportRows.map((row) => [
+      row.id,
+      row.title,
+      row.mediaType,
+      row.link,
+      row.status,
+      row.reportedError,
+    ])]
+      .map((row) => row.map(escapeCell).join("\t"))
+      .join("\n");
+
+    await navigator.clipboard.writeText(tableText);
+    setMediaReportCopied(true);
+    window.setTimeout(() => setMediaReportCopied(false), 1800);
+  };
 
  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
   const file = e.target.files?.[0];
@@ -1389,6 +1534,13 @@ function App() {
             </button>
             <button
               className="menu-item-button"
+              onClick={handleTestMediaLinks}
+              disabled={mediaReportRunning || concepts.length === 0}
+            >
+              {mediaReportRunning ? "Testing media links..." : "Test media links"}
+            </button>
+            <button
+              className="menu-item-button"
               onClick={() => {
                 setShowAbout(true);
                 setIsMenuOpen(false);
@@ -1468,6 +1620,77 @@ function App() {
                 </li>
               ))}
             </ul>
+          )}
+        </div>
+      )}
+
+      {showMediaReport && (
+        <div
+          className="media-report-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Media link test report"
+        >
+          <button
+            className="search-close"
+            onClick={() => setShowMediaReport(false)}
+            aria-label="Close media link report"
+          >
+            x
+          </button>
+          <div className="media-report-header">
+            <h3>Media Link Test Report</h3>
+            <button
+              className="media-report-copy"
+              onClick={handleCopyMediaReport}
+              disabled={mediaReportRows.length === 0}
+              aria-label="Copy media link report table"
+              title="Copy table"
+            >
+              <span aria-hidden="true">📋</span>
+            </button>
+            {mediaReportCopied && <span className="media-report-copied">Copied</span>}
+          </div>
+          <p className="media-report-summary">
+            {mediaReportRunning
+              ? "Testing media links..."
+              : `${mediaReportRows.length} media link${mediaReportRows.length === 1 ? "" : "s"} checked.`}
+          </p>
+          {mediaReportRows.length === 0 ? (
+            <p className="search-empty">No Short Video, Long Video, or PDF links were found.</p>
+          ) : (
+            <div className="media-report-table-wrap">
+              <table className="media-report-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Title</th>
+                    <th>Media_Type</th>
+                    <th>Link</th>
+                    <th>Status</th>
+                    <th>Reported Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {mediaReportRows.map((row, index) => (
+                    <tr key={`${row.id}-${row.mediaType}-${index}`}>
+                      <td>{row.id}</td>
+                      <td>{row.title}</td>
+                      <td>{row.mediaType}</td>
+                      <td>
+                        <a href={withHttps(row.link)} target="_blank" rel="noopener noreferrer">
+                          {row.link}
+                        </a>
+                      </td>
+                      <td className={`media-status media-status-${row.status.toLowerCase()}`}>
+                        {row.status}
+                      </td>
+                      <td>{row.reportedError}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       )}

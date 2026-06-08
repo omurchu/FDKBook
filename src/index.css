@@ -148,6 +148,11 @@ body, html, #root {
   background: #f0f0f0;
 }
 
+.menu-item-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .about-box {
   position: absolute;
   top: 3.6rem;
@@ -286,6 +291,111 @@ body, html, #root {
   cursor: pointer;
   font-size: 1rem;
   line-height: 1;
+}
+
+.media-report-dialog {
+  position: absolute;
+  top: 3.6rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  width: min(980px, calc(100vw - 2rem));
+  max-height: min(680px, calc(100vh - 5rem));
+  overflow-y: auto;
+  padding: 0.85rem;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.16);
+}
+
+.media-report-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 2rem 0.4rem 0;
+}
+
+.media-report-header h3 {
+  margin: 0;
+}
+
+.media-report-copy {
+  width: 2rem;
+  height: 1.8rem;
+  padding: 0;
+  border: 1px solid #aaa;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.media-report-copy:hover:not(:disabled) {
+  background: #f0f0f0;
+}
+
+.media-report-copy:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.media-report-copied {
+  color: #267326;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.media-report-summary {
+  margin: 0 0 0.6rem 0;
+  color: #555;
+  font-size: 0.9rem;
+}
+
+.media-report-table-wrap {
+  overflow-x: auto;
+}
+
+.media-report-table {
+  width: 100%;
+  min-width: 820px;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.media-report-table th,
+.media-report-table td {
+  padding: 0.35rem 0.45rem;
+  border: 1px solid #ddd;
+  text-align: left;
+  vertical-align: top;
+}
+
+.media-report-table th {
+  background: #f4f4f4;
+  font-weight: 700;
+}
+
+.media-report-table td:nth-child(4) {
+  max-width: 360px;
+  overflow-wrap: anywhere;
+}
+
+.media-status {
+  font-weight: 700;
+}
+
+.media-status-good {
+  color: #267326;
+}
+
+.media-status-broken {
+  color: #b00020;
+}
+
+.media-status-unknown {
+  color: #7a5a00;
 }
 
 .pane-container {
