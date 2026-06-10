@@ -921,7 +921,7 @@ function App() {
       if (savedMatrix) {
         loadFromArrayBuffer(base64ToBuffer(savedMatrix), "Saved upload");
         const savedName = window.localStorage.getItem(SAVED_MATRIX_NAME_KEY);
-        setFileName(savedName ? `Saved Matrix: ${savedName}` : "Saved Matrix");
+        setFileName(savedName ? `Active Matrix: ${savedName}` : "Active Matrix: saved local matrix");
         return;
       }
     } catch (err) {
@@ -1203,7 +1203,7 @@ function App() {
       try {
         window.localStorage.setItem(SAVED_MATRIX_KEY, bufferToBase64(buffer));
         window.localStorage.setItem(SAVED_MATRIX_NAME_KEY, file.name);
-        setFileName(`Saved Matrix: ${file.name}`);
+        setFileName(`Active Matrix: ${file.name}`);
       } catch (storageErr) {
         console.error("Loaded matrix, but could not save it for refresh.", storageErr);
         setLoadError("Loaded matrix, but could not save it for refresh.");
