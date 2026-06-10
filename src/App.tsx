@@ -76,6 +76,34 @@ const COMMENT_FORM_ACTION =
   "https://docs.google.com/forms/d/e/1FAIpQLSfRsy9X9bVI-CdppeEJzgSb3ZbIa7dqoELENtiVRuVue1M4lw/formResponse";
 const MAX_READER_HISTORY_LENGTH = 2000;
 const ALPHA_TESTER_NAME_STORAGE_KEY = "fdkAlphaTesterName";
+const SAVED_MATRIX_KEY = "fdkSavedMatrix";
+const SAVED_MATRIX_NAME_KEY = "fdkSavedMatrixName";
+
+const bufferToBase64 = (buffer: ArrayBuffer) => {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(
+      null,
+      Array.from(bytes.subarray(i, i + chunkSize))
+    );
+  }
+
+  return btoa(binary);
+};
+
+const base64ToBuffer = (base64: string) => {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  return bytes.buffer;
+};
 
 const getConceptIdFromUrl = () => {
   const id = Number(new URLSearchParams(window.location.search).get("concept"));
@@ -888,6 +916,20 @@ function App() {
   // Auto-load default matrix file on startup
    
   React.useEffect(() => {
+    try {
+      const savedMatrix = window.localStorage.getItem(SAVED_MATRIX_KEY);
+      if (savedMatrix) {
+        loadFromArrayBuffer(base64ToBuffer(savedMatrix), "Saved upload");
+        const savedName = window.localStorage.getItem(SAVED_MATRIX_NAME_KEY);
+        setFileName(savedName ? `Saved Matrix: ${savedName}` : "Saved Matrix");
+        return;
+      }
+    } catch (err) {
+      console.error("Failed to load saved matrix; falling back to default matrix.", err);
+      window.localStorage.removeItem(SAVED_MATRIX_KEY);
+      window.localStorage.removeItem(SAVED_MATRIX_NAME_KEY);
+    }
+
     const defaultPath = process.env.PUBLIC_URL + "/matrix_file/fdk_matrix.xlsx";
 
     fetch(defaultPath)
@@ -1119,6 +1161,31 @@ function App() {
     window.setTimeout(() => setMediaReportCopied(false), 1800);
   };
 
+ const handleResetMatrix = () => {
+  try {
+    window.localStorage.removeItem(SAVED_MATRIX_KEY);
+    window.localStorage.removeItem(SAVED_MATRIX_NAME_KEY);
+  } catch {
+    // Ignore storage cleanup errors and still try to reload the default matrix.
+  }
+
+  setIsMenuOpen(false);
+  const defaultPath = process.env.PUBLIC_URL + "/matrix_file/fdk_matrix.xlsx";
+
+  fetch(defaultPath)
+    .then((res) => res.arrayBuffer())
+    .then((buffer) => {
+      try {
+        loadFromArrayBuffer(buffer, "Reset to default");
+        setFileName("Active Matrix: fdk_matrix.xlsx");
+      } catch (err) {
+        console.error("Failed to reload default Excel file:", err);
+        setLoadError(err instanceof Error ? err.message : "Failed to reload default Excel file.");
+      }
+    })
+    .catch(() => setLoadError("Failed to reload default matrix."));
+};
+
  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
   const file = e.target.files?.[0];
   if (!file) return;
@@ -1133,6 +1200,14 @@ function App() {
 
     try {
       loadFromArrayBuffer(buffer, "User upload");
+      try {
+        window.localStorage.setItem(SAVED_MATRIX_KEY, bufferToBase64(buffer));
+        window.localStorage.setItem(SAVED_MATRIX_NAME_KEY, file.name);
+        setFileName(`Saved Matrix: ${file.name}`);
+      } catch (storageErr) {
+        console.error("Loaded matrix, but could not save it for refresh.", storageErr);
+        setLoadError("Loaded matrix, but could not save it for refresh.");
+      }
     } catch (err) {
       console.error("Failed to parse uploaded Excel file:", err);
       setLoadError(err instanceof Error ? err.message : "Failed to parse uploaded Excel file.");
@@ -1462,7 +1537,7 @@ function App() {
           <summary>Settings</summary>
           <div className="app-menu-panel">
             <label className="file-button">
-              Choose File
+              Load local matrix
               <input
                 type="file"
                 accept=".xlsx, .xls"
@@ -1473,6 +1548,13 @@ function App() {
                 style={{ display: "none" }}
               />
             </label>
+            <button
+              type="button"
+              className="menu-item-button"
+              onClick={handleResetMatrix}
+            >
+              Reset to default matrix
+            </button>
             <label className="menu-check">
               <input
                 type="checkbox"
