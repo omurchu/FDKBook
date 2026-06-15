@@ -44,6 +44,35 @@ type MediaLinkReportRow = {
   reportedError: string;
 };
 
+type MatrixQaSeverity = "Info" | "Warning" | "Error";
+
+type MatrixQaIssue = {
+  severity: MatrixQaSeverity;
+  id?: number;
+  title?: string;
+  row?: number;
+  column?: number;
+  message: string;
+};
+
+type LinksSummaryRow = {
+  id: number;
+  title: string;
+  outgoingLinkCount: number;
+  incomingLinkCount: number;
+  outMaxStrength: number;
+  inMaxStrength: number;
+};
+
+type MatrixQaReport = {
+  sourceName: string;
+  generatedAt: string;
+  matrixSize: number;
+  headerRow: number;
+  matrixStartColumn: number;
+  issues: MatrixQaIssue[];
+};
+
 type GraphNode = {
   concept: Concept;
   x: number;
@@ -59,6 +88,11 @@ type GraphLink = {
 const norm = (v: any) => String(v ?? "").trim().toLowerCase();
 
 const trimOrEmpty = (v: any) => (typeof v === "string" ? v.trim() : (v ?? ""));
+
+const excelColumnName = (column?: number) => {
+  if (!Number.isFinite(column) || !column || column < 1) return "";
+  return XLSX.utils.encode_col(column - 1);
+};
 
 const INITIAL_NEXT_STORY_COUNT = 2;
 const MAX_OTHER_SUGGESTION_CLICKS = 2;
@@ -204,6 +238,24 @@ const parseCellToStrengthAngle = (raw: any) => {
   return { angleVal, strengthVal, foundTuple };
 };
 
+const isWellFormedMatrixCell = (raw: any) => {
+  const s = String(raw ?? "").trim();
+  if (!s) return true;
+
+  if (s.includes(";")) {
+    const parts = s.split(";").map((part) => part.trim());
+    return parts.length === 2 && parts.every((part) => part !== "" && !Number.isNaN(Number(part)));
+  }
+
+  return !Number.isNaN(Number(s));
+};
+
+const readFirstSheetData = (buffer: ArrayBuffer) => {
+  const wb = XLSX.read(buffer, { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(ws, { header: 1 }) as any[][];
+};
+
 const parseSheet = (data: any[][]): ParsedSheet => {
   // 1) Find header row (first ~20 rows)
   let headerRowIdx = -1;
@@ -310,29 +362,403 @@ const parseSheet = (data: any[][]): ParsedSheet => {
     });
   }
 
-  // 6) Build angle + strength matrices (n x n)
-  const angleMatrix: number[][] = [];
-  const strengthMatrix: number[][] = [];
+  // 6) Build angle + strength matrices by ID, then normalize to concept array order.
+  const conceptIndexById = new Map<number, number>();
+  concepts.forEach((concept, index) => {
+    if (Number.isFinite(concept.id) && !conceptIndexById.has(concept.id)) {
+      conceptIndexById.set(concept.id, index);
+    }
+  });
+
+  const matrixRowIndexById = new Map<number, number>();
+  for (let i = 0; i < n; i++) {
+    const row = data[conceptRowStart + i] ?? [];
+    const rowId = Number(row[idCol]);
+    const sourceId = Number.isFinite(rowId) ? rowId : matrixHeaderIds[i];
+    if (Number.isFinite(sourceId) && !matrixRowIndexById.has(sourceId)) {
+      matrixRowIndexById.set(sourceId, i);
+    }
+  }
+
+  const angleMatrix: number[][] = Array.from({ length: concepts.length }, () =>
+    Array(concepts.length).fill(0)
+  );
+  const strengthMatrix: number[][] = Array.from({ length: concepts.length }, () =>
+    Array(concepts.length).fill(0)
+  );
   let foundTuples = false;
 
-  for (let i = 0; i < n; i++) {
-    const row = data[matrixRowStart + i] ?? [];
-    const aRow: number[] = [];
-    const sRow: number[] = [];
+  concepts.forEach((sourceConcept, sourceIndex) => {
+    const matrixRowIndex = matrixRowIndexById.get(sourceConcept.id);
+    if (matrixRowIndex === undefined) return;
 
+    const row = data[matrixRowStart + matrixRowIndex] ?? [];
     for (let j = 0; j < n; j++) {
+      const targetIndex = conceptIndexById.get(matrixHeaderIds[j]);
+      if (targetIndex === undefined) continue;
+
       const raw = row[matrixStartCol + j];
       const parsed = parseCellToStrengthAngle(raw);
       if (parsed.foundTuple) foundTuples = true;
-      aRow.push(parsed.angleVal);
-      sRow.push(parsed.strengthVal);
+      angleMatrix[sourceIndex][targetIndex] = parsed.angleVal;
+      strengthMatrix[sourceIndex][targetIndex] = parsed.strengthVal;
     }
-
-    angleMatrix.push(aRow);
-    strengthMatrix.push(sRow);
-  }
+  });
 
   return { concepts, angleMatrix, strengthMatrix, foundTuples, n };
+};
+
+const findHeaderRow = (data: any[][]) => {
+  for (let r = 0; r < Math.min(20, data.length); r++) {
+    const row = data[r] ?? [];
+    const rowNorm = row.map(norm);
+    if (rowNorm.includes("id") && rowNorm.includes("title")) return r;
+  }
+
+  return -1;
+};
+
+const analyzeMatrixData = (data: any[][], sourceName: string): MatrixQaReport => {
+  const issues: MatrixQaIssue[] = [];
+  const headerRowIdx = findHeaderRow(data);
+
+  if (headerRowIdx < 0) {
+    return {
+      sourceName,
+      generatedAt: new Date().toLocaleString(),
+      matrixSize: 0,
+      headerRow: 0,
+      matrixStartColumn: 0,
+      issues: [
+        {
+          severity: "Error",
+          message: "Could not find a header row containing ID and Title.",
+        },
+      ],
+    };
+  }
+
+  const header = data[headerRowIdx] ?? [];
+  const colIndexOf = (label: string) => header.findIndex((c: any) => norm(c) === label);
+  const idCol = colIndexOf("id");
+  const titleCol = colIndexOf("title");
+
+  let textCol = colIndexOf("entry text");
+  if (textCol < 0) textCol = colIndexOf("text entries");
+  if (textCol < 0) textCol = colIndexOf("entire");
+  let pdfCol = colIndexOf("pdf link");
+  if (pdfCol < 0) pdfCol = colIndexOf("pdf");
+  const videoCol = colIndexOf("video link");
+  const shortVideoCol = colIndexOf("short video");
+  const longVideoCol = colIndexOf("long video");
+
+  if (idCol < 0) issues.push({ severity: "Error", message: "Missing required ID column." });
+  if (titleCol < 0) issues.push({ severity: "Error", message: "Missing required Title column." });
+  if (textCol < 0) {
+    issues.push({
+      severity: "Error",
+      message: "Missing required Entry Text/Text Entries/Entire column.",
+    });
+  }
+
+  let matrixStartCol = -1;
+  for (let c = 0; c < header.length; c++) {
+    const s = String(header[c] ?? "").trim();
+    if (s !== "" && !Number.isNaN(Number(s))) {
+      matrixStartCol = c;
+      break;
+    }
+  }
+
+  if (matrixStartCol < 0) {
+    issues.push({ severity: "Error", message: "Could not find numeric matrix header columns." });
+    return {
+      sourceName,
+      generatedAt: new Date().toLocaleString(),
+      matrixSize: 0,
+      headerRow: headerRowIdx + 1,
+      matrixStartColumn: 0,
+      issues,
+    };
+  }
+
+  const matrixHeaderIds: number[] = [];
+  for (let c = matrixStartCol; c < header.length; c++) {
+    const s = String(header[c] ?? "").trim();
+    if (s === "" || Number.isNaN(Number(s))) break;
+    matrixHeaderIds.push(Number(s));
+  }
+
+  const matrixSize = matrixHeaderIds.length;
+  const duplicateHeaderIds = matrixHeaderIds.filter(
+    (id, index) => matrixHeaderIds.indexOf(id) !== index
+  );
+  Array.from(new Set(duplicateHeaderIds)).forEach((id) => {
+    issues.push({
+      severity: "Error",
+      id,
+      message: `Duplicate numeric matrix header ID ${id}.`,
+    });
+  });
+
+  for (let i = 1; i < matrixHeaderIds.length; i++) {
+    if (matrixHeaderIds[i] <= matrixHeaderIds[i - 1]) {
+      issues.push({
+        severity: "Info",
+        id: matrixHeaderIds[i],
+        column: matrixStartCol + i + 1,
+        message: "Matrix header IDs are not strictly increasing at this column. The app now uses ID lookup, so this is OK if intentional.",
+      });
+    }
+  }
+
+  const rowAfterHeader = data[headerRowIdx + 1] ?? [];
+  let nonNumericCount = 0;
+  let sampleCount = 0;
+  for (let c = matrixStartCol; c < matrixStartCol + Math.min(matrixSize, 20); c++) {
+    const cell = rowAfterHeader[c];
+    const s = String(cell ?? "").trim();
+    if (s === "") continue;
+    sampleCount++;
+    if (!isNumericLike(cell)) nonNumericCount++;
+  }
+  const looksLikeTitleRow = sampleCount > 0 && nonNumericCount / sampleCount > 0.6;
+  const conceptRowStart = headerRowIdx + 1;
+  const matrixRowStart = looksLikeTitleRow ? headerRowIdx + 2 : headerRowIdx + 1;
+
+  const rowIds: number[] = [];
+  const matrixHeaderIdSet = new Set(matrixHeaderIds);
+  const conceptRowsWithNumericIds: Array<{
+    id: number;
+    title: string;
+    rowNumber: number;
+    rowIndex: number;
+  }> = [];
+
+  for (let r = conceptRowStart; r < data.length; r++) {
+    const row = data[r] ?? [];
+    const rowId = Number(row[idCol]);
+    if (!Number.isFinite(rowId)) continue;
+
+    const title = titleCol >= 0 ? String(trimOrEmpty(row[titleCol])) : "";
+    conceptRowsWithNumericIds.push({
+      id: rowId,
+      title,
+      rowNumber: r + 1,
+      rowIndex: r - conceptRowStart,
+    });
+  }
+
+  if (conceptRowsWithNumericIds.length !== matrixSize) {
+    issues.push({
+      severity: "Warning",
+      message: `Found ${conceptRowsWithNumericIds.length} concept rows with numeric IDs, but ${matrixSize} numeric matrix columns.`,
+    });
+  }
+
+  conceptRowsWithNumericIds.forEach((conceptRow) => {
+    if (!matrixHeaderIdSet.has(conceptRow.id)) {
+      issues.push({
+        severity: "Error",
+        id: conceptRow.id,
+        title: conceptRow.title,
+        row: conceptRow.rowNumber,
+        column: idCol + 1,
+        message: `Concept row ID ${conceptRow.id} does not have a matching matrix header column.`,
+      });
+    }
+  });
+
+  for (let i = 0; i < matrixSize; i++) {
+    const sheetRowNumber = conceptRowStart + i + 1;
+    const row = data[conceptRowStart + i] ?? [];
+    const matrixRow = data[matrixRowStart + i] ?? [];
+    const expectedId = matrixHeaderIds[i];
+    const rawId = row[idCol];
+    const rowId = Number(rawId);
+    const effectiveRowId = Number.isFinite(rowId) ? rowId : expectedId;
+    const title = titleCol >= 0 ? String(trimOrEmpty(row[titleCol])) : "";
+    const text = textCol >= 0 ? String(trimOrEmpty(row[textCol])) : "";
+    const hasPdf = pdfCol >= 0 && String(trimOrEmpty(row[pdfCol])) !== "";
+    const hasVideo =
+      (videoCol >= 0 && String(trimOrEmpty(row[videoCol])) !== "") ||
+      (shortVideoCol >= 0 && String(trimOrEmpty(row[shortVideoCol])) !== "") ||
+      (longVideoCol >= 0 && String(trimOrEmpty(row[longVideoCol])) !== "");
+    const conceptCells = row.slice(0, matrixStartCol);
+    const isEmptyConceptRow = conceptCells.every((cell) => String(cell ?? "").trim() === "");
+
+    if (isEmptyConceptRow) {
+      issues.push({
+        severity: "Warning",
+        id: expectedId,
+        row: sheetRowNumber,
+        message: "Empty concept row inside the active matrix range.",
+      });
+      continue;
+    }
+
+    if (!Number.isFinite(rowId)) {
+      issues.push({
+        severity: "Error",
+        id: expectedId,
+        row: sheetRowNumber,
+        message: `Concept row for matrix header ${expectedId} does not have a numeric ID.`,
+      });
+    } else {
+      rowIds.push(rowId);
+      if (rowId !== expectedId) {
+        issues.push({
+          severity: "Info",
+          id: rowId,
+          title,
+          row: sheetRowNumber,
+          column: idCol + 1,
+          message: `Concept row ID ${rowId} does not match matrix header ID ${expectedId} at the same position. The app now resolves matrix rows and columns by ID.`,
+        });
+      }
+    }
+
+    if (!title) {
+      issues.push({
+        severity: "Warning",
+          id: effectiveRowId,
+          row: sheetRowNumber,
+          column: titleCol + 1,
+          message: "Concept row is missing a Title.",
+      });
+    }
+
+    if (textCol >= 0 && !text) {
+      const mediaTypes = [hasVideo ? "video" : "", hasPdf ? "PDF" : ""].filter(Boolean);
+      const mediaNote =
+        mediaTypes.length > 0 ? `, but has a ${mediaTypes.join("/")}.` : ".";
+
+      issues.push({
+        severity: "Warning",
+        id: effectiveRowId,
+        title,
+        row: sheetRowNumber,
+        column: textCol + 1,
+        message: `Concept row is missing content text${mediaNote}`,
+      });
+    }
+
+    let rowCandidateCount = 0;
+    let incomingCandidateCount = 0;
+    for (let j = 0; j < matrixSize; j++) {
+      const raw = matrixRow[matrixStartCol + j];
+      const cellText = String(raw ?? "").trim();
+
+      if (!isWellFormedMatrixCell(raw)) {
+        issues.push({
+          severity: "Error",
+          id: Number.isFinite(rowId) ? rowId : expectedId,
+          title,
+          row: matrixRowStart + i + 1,
+          column: matrixStartCol + j + 1,
+          message: `Malformed matrix cell "${cellText}". Expected 0, a number, or rating; weight such as 4; 30.`,
+        });
+        continue;
+      }
+
+      const parsed = parseCellToStrengthAngle(raw);
+      const hasCandidate = parsed.strengthVal > 0 || parsed.angleVal > 0;
+      if (hasCandidate) rowCandidateCount++;
+
+      if (effectiveRowId === matrixHeaderIds[j] && hasCandidate) {
+        issues.push({
+          severity: "Warning",
+          id: effectiveRowId,
+          title,
+          row: matrixRowStart + i + 1,
+          column: matrixStartCol + j + 1,
+          message: "Self-link cell is non-zero.",
+        });
+      }
+
+      if (parsed.strengthVal < 0 || parsed.strengthVal > 5) {
+        issues.push({
+          severity: "Warning",
+          id: effectiveRowId,
+          title,
+          row: matrixRowStart + i + 1,
+          column: matrixStartCol + j + 1,
+          message: `Rating/strength ${parsed.strengthVal} is outside expected 0-5 range.`,
+        });
+      }
+
+      if (parsed.angleVal < 0 || parsed.angleVal > 180) {
+        issues.push({
+          severity: "Warning",
+          id: effectiveRowId,
+          title,
+          row: matrixRowStart + i + 1,
+          column: matrixStartCol + j + 1,
+          message: `Weight/angle ${parsed.angleVal} is outside expected 0-180 range.`,
+        });
+      }
+    }
+
+    const incomingColumnIndex = matrixHeaderIds.findIndex((id) => id === effectiveRowId);
+    if (incomingColumnIndex >= 0) {
+      for (let r = 0; r < matrixSize; r++) {
+        const sourceRow = data[matrixRowStart + r] ?? [];
+        const parsed = parseCellToStrengthAngle(sourceRow[matrixStartCol + incomingColumnIndex]);
+        if (parsed.strengthVal > 0 || parsed.angleVal > 0) incomingCandidateCount++;
+      }
+    }
+
+    if (rowCandidateCount === 0) {
+      issues.push({
+        severity: "Warning",
+        id: effectiveRowId,
+        title,
+        row: matrixRowStart + i + 1,
+        message: "This concept has zero outgoing non-zero candidate links.",
+      });
+    }
+
+    if (incomingColumnIndex >= 0 && incomingCandidateCount === 0) {
+      issues.push({
+        severity: "Warning",
+        id: effectiveRowId,
+        title,
+        column: matrixStartCol + incomingColumnIndex + 1,
+        message: "This concept has zero incoming non-zero candidate links.",
+      });
+    }
+
+  }
+
+  const duplicateRowIds = rowIds.filter((id, index) => rowIds.indexOf(id) !== index);
+  Array.from(new Set(duplicateRowIds)).forEach((id) => {
+    issues.push({
+      severity: "Error",
+      id,
+      message: `Duplicate concept row ID ${id}.`,
+    });
+  });
+
+  const rowIdSet = new Set(rowIds);
+  matrixHeaderIds.forEach((id, index) => {
+    if (!rowIdSet.has(id)) {
+      issues.push({
+        severity: "Error",
+        id,
+        column: matrixStartCol + index + 1,
+        message: `Matrix header ID ${id} does not have a matching concept row ID.`,
+      });
+    }
+  });
+
+  return {
+    sourceName,
+    generatedAt: new Date().toLocaleString(),
+    matrixSize,
+    headerRow: headerRowIdx + 1,
+    matrixStartColumn: matrixStartCol + 1,
+    issues,
+  };
 };
 
 function ConceptGraph({
@@ -860,6 +1286,10 @@ function App() {
   const [mediaReportRows, setMediaReportRows] = useState<MediaLinkReportRow[]>([]);
   const [mediaReportRunning, setMediaReportRunning] = useState<boolean>(false);
   const [mediaReportCopied, setMediaReportCopied] = useState<boolean>(false);
+  const [showLinksSummaryReport, setShowLinksSummaryReport] = useState<boolean>(false);
+  const [linksSummaryRows, setLinksSummaryRows] = useState<LinksSummaryRow[]>([]);
+  const [showMatrixQaReport, setShowMatrixQaReport] = useState<boolean>(false);
+  const [matrixQaReport, setMatrixQaReport] = useState<MatrixQaReport | null>(null);
   const [feedbackComment, setFeedbackComment] = useState<string>("");
   const [likeConceptContent, setLikeConceptContent] = useState<"" | "Yes" | "No">("");
   const [likeHowYouGotHere, setLikeHowYouGotHere] = useState<"" | "Yes" | "No">("");
@@ -879,10 +1309,7 @@ function App() {
   const commentFormRef = useRef<HTMLFormElement | null>(null);
 
   const loadFromArrayBuffer = React.useCallback((buffer: ArrayBuffer, sourceLabel: string) => {
-    const wb = XLSX.read(buffer, { type: "array" });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const data = XLSX.utils.sheet_to_json(ws, { header: 1 }) as any[][];
-
+    const data = readFirstSheetData(buffer);
     const parsed = parseSheet(data);
     setLoadError("");
 
@@ -1161,6 +1588,47 @@ function App() {
     window.setTimeout(() => setMediaReportCopied(false), 1800);
   };
 
+  const buildLinksSummaryRows = (): LinksSummaryRow[] =>
+    concepts.map((concept, conceptIndex) => {
+      let outgoingLinkCount = 0;
+      let incomingLinkCount = 0;
+      let outMaxStrength = 0;
+      let inMaxStrength = 0;
+
+      concepts.forEach((_, targetIndex) => {
+        const strength = strengthMatrix[conceptIndex]?.[targetIndex] ?? 0;
+        const angle = angleMatrix[conceptIndex]?.[targetIndex] ?? 0;
+        if (strength > 0 || angle > 0) {
+          outgoingLinkCount++;
+          outMaxStrength = Math.max(outMaxStrength, strength);
+        }
+      });
+
+      concepts.forEach((_, sourceIndex) => {
+        const strength = strengthMatrix[sourceIndex]?.[conceptIndex] ?? 0;
+        const angle = angleMatrix[sourceIndex]?.[conceptIndex] ?? 0;
+        if (strength > 0 || angle > 0) {
+          incomingLinkCount++;
+          inMaxStrength = Math.max(inMaxStrength, strength);
+        }
+      });
+
+      return {
+        id: concept.id,
+        title: concept.title,
+        outgoingLinkCount,
+        incomingLinkCount,
+        outMaxStrength,
+        inMaxStrength,
+      };
+    });
+
+  const handleShowLinksSummaryReport = () => {
+    setLinksSummaryRows(buildLinksSummaryRows());
+    setShowLinksSummaryReport(true);
+    setIsMenuOpen(false);
+  };
+
  const handleResetMatrix = () => {
   try {
     window.localStorage.removeItem(SAVED_MATRIX_KEY);
@@ -1200,6 +1668,8 @@ function App() {
 
     try {
       loadFromArrayBuffer(buffer, "User upload");
+      setMatrixQaReport(analyzeMatrixData(readFirstSheetData(buffer), file.name));
+      setShowMatrixQaReport(true);
       try {
         window.localStorage.setItem(SAVED_MATRIX_KEY, bufferToBase64(buffer));
         window.localStorage.setItem(SAVED_MATRIX_NAME_KEY, file.name);
@@ -1362,13 +1832,17 @@ function App() {
     setCommentSubmitted(false);
   };
 
+  const selectedConceptIndex = selectedConcept
+    ? concepts.findIndex((concept) => concept.id === selectedConcept.id)
+    : -1;
+
   const relatedConcepts =
-    selectedConcept && angleMatrix[selectedConcept.id - 1]
+    selectedConcept && selectedConceptIndex >= 0 && angleMatrix[selectedConceptIndex]
       ? concepts
           .map((c, idx) => ({
             concept: c,
-            angle: angleMatrix[selectedConcept.id - 1]?.[idx] ?? 0,
-            strength: strengthMatrix[selectedConcept.id - 1]?.[idx] ?? 0,
+            angle: angleMatrix[selectedConceptIndex]?.[idx] ?? 0,
+            strength: strengthMatrix[selectedConceptIndex]?.[idx] ?? 0,
           }))
           .filter((rel) => rel.angle > 0)
           .sort((a, b) => b.angle - a.angle)
@@ -1380,14 +1854,14 @@ function App() {
   const seenConceptIds = new Set(activeHistoryIds);
   const unseenConcepts = concepts.filter((concept) => !seenConceptIds.has(concept.id));
 
-   // Next in Story: strongest unseen connections by strength
+  // Next in Story: strongest unseen connections by strength
   const allNextStoryConcepts =
-    selectedConcept && strengthMatrix[selectedConcept.id - 1]
+    selectedConcept && selectedConceptIndex >= 0 && strengthMatrix[selectedConceptIndex]
       ? concepts
           .map((c, idx) => ({
             concept: c,
-            angle: angleMatrix[selectedConcept.id - 1]?.[idx] ?? 0,
-            strength: strengthMatrix[selectedConcept.id - 1]?.[idx] ?? 0,
+            angle: angleMatrix[selectedConceptIndex]?.[idx] ?? 0,
+            strength: strengthMatrix[selectedConceptIndex]?.[idx] ?? 0,
           }))
           .filter(
             (rel) =>
@@ -1654,6 +2128,13 @@ function App() {
             </button>
             <button
               className="menu-item-button"
+              onClick={handleShowLinksSummaryReport}
+              disabled={concepts.length === 0}
+            >
+              Links Summary Report
+            </button>
+            <button
+              className="menu-item-button"
               onClick={() => {
                 setShowAbout(true);
                 setIsMenuOpen(false);
@@ -1799,6 +2280,114 @@ function App() {
                         {row.status}
                       </td>
                       <td>{row.reportedError}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {showLinksSummaryReport && (
+        <div
+          className="links-summary-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Links summary report"
+        >
+          <button
+            className="search-close"
+            onClick={() => setShowLinksSummaryReport(false)}
+            aria-label="Close links summary report"
+          >
+            x
+          </button>
+          <h3>Links Summary Report</h3>
+          <p className="links-summary-summary">
+            {linksSummaryRows.length} concepts · based on the currently active matrix
+          </p>
+
+          <div className="links-summary-table-wrap">
+            <table className="links-summary-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Title</th>
+                  <th>Outgoing_Links</th>
+                  <th>Incoming_Links</th>
+                  <th>Out_Max_Strength</th>
+                  <th>In_Max_Strength</th>
+                </tr>
+              </thead>
+              <tbody>
+                {linksSummaryRows.map((row, index) => (
+                  <tr key={`links-summary-${row.id}-${index}`}>
+                    <td>{row.id}</td>
+                    <td>{row.title}</td>
+                    <td>{row.outgoingLinkCount}</td>
+                    <td>{row.incomingLinkCount}</td>
+                    <td>{row.outMaxStrength}</td>
+                    <td>{row.inMaxStrength}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {showMatrixQaReport && matrixQaReport && (
+        <div
+          className="matrix-qa-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Matrix QA report"
+        >
+          <button
+            className="search-close"
+            onClick={() => setShowMatrixQaReport(false)}
+            aria-label="Close matrix QA report"
+          >
+            x
+          </button>
+          <h3>Matrix QA Report</h3>
+          <p className="matrix-qa-summary">
+            {matrixQaReport.sourceName} · {matrixQaReport.matrixSize} matrix entries · header row{" "}
+            {matrixQaReport.headerRow}, matrix starts at column {matrixQaReport.matrixStartColumn} ·{" "}
+            {matrixQaReport.issues.filter((issue) => issue.severity === "Error").length} errors,{" "}
+            {matrixQaReport.issues.filter((issue) => issue.severity === "Warning").length} warnings
+          </p>
+
+          <h4>Inconsistencies</h4>
+          {matrixQaReport.issues.length === 0 ? (
+            <p className="search-empty">No inconsistencies found.</p>
+          ) : (
+            <div className="matrix-qa-table-wrap">
+              <table className="matrix-qa-table">
+                <thead>
+                  <tr>
+                    <th>Severity</th>
+                    <th>ID</th>
+                    <th>Title</th>
+                    <th>Row</th>
+                    <th>Column</th>
+                    <th>Excel_Col</th>
+                    <th>Issue</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {matrixQaReport.issues.map((issue, index) => (
+                    <tr key={`matrix-qa-issue-${index}`}>
+                      <td className={`matrix-qa-severity matrix-qa-${issue.severity.toLowerCase()}`}>
+                        {issue.severity}
+                      </td>
+                      <td>{issue.id ?? ""}</td>
+                      <td>{issue.title ?? ""}</td>
+                      <td>{issue.row ?? ""}</td>
+                      <td>{issue.column ?? ""}</td>
+                      <td>{excelColumnName(issue.column)}</td>
+                      <td>{issue.message}</td>
                     </tr>
                   ))}
                 </tbody>
