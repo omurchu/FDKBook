@@ -526,14 +526,48 @@ body, html, #root {
 
 /* Shared pane styles */
 .pane {
-  flex: 1;
+  min-width: 0;
   padding: 1rem;
   border-right: 1px solid #ccc;
   overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .pane:last-child {
   border-right: none;
+}
+
+.pane-resize-handle {
+  flex: 0 0 8px;
+  width: 8px;
+  margin-left: -4px;
+  margin-right: -4px;
+  cursor: col-resize;
+  position: relative;
+  z-index: 3;
+  background: transparent;
+  touch-action: none;
+}
+
+.pane-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+}
+
+.pane-resize-handle:hover::after,
+.pane-resize-handle:focus-visible::after,
+.pane-resizing .pane-resize-handle::after {
+  background: #8aa5c3;
+}
+
+.pane-resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .left-pane h3 {
@@ -943,6 +977,107 @@ body, html, #root {
   min-width: 1rem;
   font-size: 0.78rem;
   line-height: 1;
+}
+
+.simple-triangle-container {
+  width: 100%;
+  overflow-x: hidden;
+  padding: 0.25rem 0 0.5rem;
+}
+
+.simple-triangle-svg {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  box-sizing: border-box;
+  display: block;
+  background: rgba(193, 18, 31, 0.04);
+}
+
+.simple-triangle-current-title {
+  fill: #222;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.simple-triangle-origin {
+  fill: #0f4c81;
+  stroke: #061f35;
+}
+
+.simple-triangle-next-line {
+  stroke: #111;
+  stroke-width: 1.5;
+}
+
+.simple-triangle-endpoint {
+  fill: #fff8c6;
+  stroke: #111;
+  stroke-width: 1.2;
+}
+
+.simple-triangle-leap-line {
+  stroke: #d6b800;
+  stroke-width: 2;
+  stroke-dasharray: 6 5;
+}
+
+#simple-triangle-leap-arrow path {
+  fill: #d6b800;
+}
+
+.simple-triangle-choice,
+.simple-triangle-leap {
+  width: 100%;
+  min-height: 1.85rem;
+  padding: 0.22rem 0.4rem;
+  border: 1px solid #888;
+  border-radius: 4px;
+  color: #222;
+  cursor: pointer;
+  font-size: 0.78rem;
+  line-height: 1.15;
+  text-align: left;
+  white-space: normal;
+}
+
+.simple-triangle-choice {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.simple-triangle-media-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.95rem;
+  min-width: 0.95rem;
+  margin-right: 0.12rem;
+  font-size: 0.74rem;
+  line-height: 1;
+}
+
+.simple-triangle-choice:hover,
+.simple-triangle-leap:hover:not(:disabled) {
+  filter: brightness(0.97);
+}
+
+.simple-triangle-leap {
+  border-color: #d6b800;
+  background: #fff8c6;
+  font-weight: 400;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+}
+
+.simple-triangle-leap:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 .next-story-meta {

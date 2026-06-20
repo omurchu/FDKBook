@@ -95,6 +95,26 @@ const excelColumnName = (column?: number) => {
   return XLSX.utils.encode_col(column - 1);
 };
 
+const splitIntoTwoLines = (text: string) => {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length <= 1) return [text.trim()];
+
+  const midpoint = text.trim().length / 2;
+  let bestIndex = 1;
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (let i = 1; i < words.length; i++) {
+    const lineLength = words.slice(0, i).join(" ").length;
+    const distance = Math.abs(lineLength - midpoint);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = i;
+    }
+  }
+
+  return [words.slice(0, bestIndex).join(" "), words.slice(bestIndex).join(" ")];
+};
+
 const INITIAL_NEXT_STORY_COUNT = 2;
 const MAX_OTHER_SUGGESTION_CLICKS = 2;
 const INITIAL_HISTORY_CHOICE = "j_Start";
@@ -127,6 +147,9 @@ const MAX_READER_HISTORY_LENGTH = 2000;
 const ALPHA_TESTER_NAME_STORAGE_KEY = "fdkAlphaTesterName";
 const SAVED_MATRIX_KEY = "fdkSavedMatrix";
 const SAVED_MATRIX_NAME_KEY = "fdkSavedMatrixName";
+const PANE_WIDTHS_STORAGE_KEY = "fdkPaneWidths";
+const DEFAULT_PANE_WIDTHS = { left: 22, middle: 48, right: 30 };
+const MIN_PANE_WIDTHS = { left: 12, middle: 28, right: 20 };
 
 const bufferToBase64 = (buffer: ArrayBuffer) => {
   let binary = "";
@@ -1363,11 +1386,26 @@ function App() {
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [showSearchDialog, setShowSearchDialog] = useState<boolean>(false);
   const [showTriangles, setShowTriangles] = useState<boolean>(true);
+  const [simpleTriangleOnly, setSimpleTriangleOnly] = useState<boolean>(true);
   const [showDialColors, setShowDialColors] = useState<boolean>(false);
   const [showToc, setShowToc] = useState<boolean>(false);
   const [showRelatedConcepts, setShowRelatedConcepts] = useState<boolean>(false);
   const [showStrengthsAndAngles, setShowStrengthsAndAngles] = useState<boolean>(false);
   const [hoveredDialConceptId, setHoveredDialConceptId] = useState<number | null>(null);
+  const [paneWidths, setPaneWidths] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem(PANE_WIDTHS_STORAGE_KEY);
+      if (!saved) return DEFAULT_PANE_WIDTHS;
+      const parsed = JSON.parse(saved);
+      const left = Number(parsed.left);
+      const middle = Number(parsed.middle);
+      const right = Number(parsed.right);
+      if (![left, middle, right].every(Number.isFinite)) return DEFAULT_PANE_WIDTHS;
+      return { left, middle, right };
+    } catch {
+      return DEFAULT_PANE_WIDTHS;
+    }
+  });
   const [nextStoryOffset, setNextStoryOffset] = useState<number>(0);
   const [otherSuggestionClicks, setOtherSuggestionClicks] = useState<number>(0);
   const [fileName, setFileName] = useState<string>("No file chosen");
@@ -1397,6 +1435,13 @@ function App() {
   const tocItemRefs = useRef<Record<number, HTMLLIElement | null>>({});
   const menuRef = useRef<HTMLDetailsElement | null>(null);
   const commentFormRef = useRef<HTMLFormElement | null>(null);
+  const paneContainerRef = useRef<HTMLDivElement | null>(null);
+  const paneDragRef = useRef<{
+    pair: "left-middle" | "middle-right";
+    startX: number;
+    containerWidth: number;
+    startWidths: typeof DEFAULT_PANE_WIDTHS;
+  } | null>(null);
 
   const loadFromArrayBuffer = React.useCallback((buffer: ArrayBuffer, sourceLabel: string) => {
     const data = readFirstSheetData(buffer);
@@ -1523,6 +1568,64 @@ function App() {
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [isMenuOpen]);
+
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem(PANE_WIDTHS_STORAGE_KEY, JSON.stringify(paneWidths));
+    } catch {
+      // Pane resizing still works if localStorage is unavailable.
+    }
+  }, [paneWidths]);
+
+  React.useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      const drag = paneDragRef.current;
+      if (!drag || drag.containerWidth <= 0) return;
+
+      const deltaPct = ((event.clientX - drag.startX) / drag.containerWidth) * 100;
+      setPaneWidths(() => {
+        const next = { ...drag.startWidths };
+
+        if (drag.pair === "left-middle") {
+          const combined = drag.startWidths.left + drag.startWidths.middle;
+          const left = Math.min(
+            combined - MIN_PANE_WIDTHS.middle,
+            Math.max(MIN_PANE_WIDTHS.left, drag.startWidths.left + deltaPct)
+          );
+          next.left = left;
+          next.middle = combined - left;
+        } else {
+          const visibleTotal = showToc
+            ? drag.startWidths.middle + drag.startWidths.right
+            : drag.startWidths.middle + drag.startWidths.right;
+          const adjustedDelta = showToc ? deltaPct : (deltaPct * visibleTotal) / 100;
+          const combined = drag.startWidths.middle + drag.startWidths.right;
+          const middle = Math.min(
+            combined - MIN_PANE_WIDTHS.right,
+            Math.max(MIN_PANE_WIDTHS.middle, drag.startWidths.middle + adjustedDelta)
+          );
+          next.middle = middle;
+          next.right = combined - middle;
+        }
+
+        return next;
+      });
+    };
+
+    const handlePointerUp = () => {
+      paneDragRef.current = null;
+      document.body.classList.remove("pane-resizing");
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerUp);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerUp);
+    };
+  }, [showToc]);
 
   const withHttps = (url: string) => {
     if (!url) return "";
@@ -2046,6 +2149,27 @@ function App() {
 
   const dialOrigin = { x: 20, y: 185 };
   const g_radius = 150; // global radius for dial points
+  const simpleTriangleTitle = selectedConcept?.title ?? "";
+  const simpleTriangleTitleLines = splitIntoTwoLines(simpleTriangleTitle);
+  const simpleTriangleTitleWidth = Math.max(
+    60,
+    ...simpleTriangleTitleLines.map((line) => line.length * 6.4)
+  );
+  const simpleTriangleOrigin = {
+    x: 28 + Math.min(270, simpleTriangleTitleWidth + 24),
+    y: simpleTriangleTitleLines.length > 1 ? 195 : 185,
+  };
+  const simpleTrianglePoint = (angleDeg: number, radius: number) => {
+    const flipped = 180 - angleDeg;
+    const angleRad = (Math.PI / 180) * flipped;
+
+    return {
+      x: simpleTriangleOrigin.x + radius * Math.sin(angleRad),
+      y: simpleTriangleOrigin.y - radius * Math.cos(angleRad),
+    };
+  };
+  const simpleNextStoryConcepts = nextStoryConcepts.slice(0, INITIAL_NEXT_STORY_COUNT);
+  const leapPoint = simpleTrianglePoint(90, g_radius * 2);
   const displayedHistory = history
     .map((entry, index) => ({ ...entry, index }))
     .reverse();
@@ -2062,6 +2186,31 @@ function App() {
       : `${omittedHistoryPrefix}${fullReaderHistory.slice(
           fullReaderHistory.length - MAX_READER_HISTORY_LENGTH + omittedHistoryPrefix.length
         )}`;
+  const visibleMiddleRightTotal = paneWidths.middle + paneWidths.right;
+  const displayedPaneWidths = showToc
+    ? paneWidths
+    : {
+        left: 0,
+        middle: (paneWidths.middle / visibleMiddleRightTotal) * 100,
+        right: (paneWidths.right / visibleMiddleRightTotal) * 100,
+      };
+  const paneStyle = (width: number): React.CSSProperties => ({
+    flex: `0 0 ${width}%`,
+  });
+  const startPaneResize = (
+    pair: "left-middle" | "middle-right",
+    event: React.PointerEvent<HTMLDivElement>
+  ) => {
+    const containerWidth = paneContainerRef.current?.getBoundingClientRect().width ?? 0;
+    paneDragRef.current = {
+      pair,
+      startX: event.clientX,
+      containerWidth,
+      startWidths: paneWidths,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    document.body.classList.add("pane-resizing");
+  };
 
   return (
     <div className="app-container">
@@ -2136,6 +2285,17 @@ function App() {
                 }}
               />
               Show Triangles
+            </label>
+            <label className="menu-check">
+              <input
+                type="checkbox"
+                checked={simpleTriangleOnly}
+                onChange={(e) => {
+                  setSimpleTriangleOnly(e.target.checked);
+                  setIsMenuOpen(false);
+                }}
+              />
+              Simple Triangle Only
             </label>
             <label className="menu-check">
               <input
@@ -2495,10 +2655,10 @@ function App() {
       )}
 
       {activeTab === "home" && (
-      <div className="pane-container" role="tabpanel" aria-label="Home">
+      <div className="pane-container" role="tabpanel" aria-label="Home" ref={paneContainerRef}>
         {/* Left Pane */}
         {showToc && (
-          <div className="pane left-pane">
+          <div className="pane left-pane" style={paneStyle(displayedPaneWidths.left)}>
             <h3>Concepts</h3>
             <ul>
               {concepts.map((c) => (
@@ -2522,9 +2682,18 @@ function App() {
             </ul>
           </div>
         )}
+        {showToc && (
+          <div
+            className="pane-resize-handle"
+            role="separator"
+            aria-label="Resize concepts and content panes"
+            aria-orientation="vertical"
+            onPointerDown={(event) => startPaneResize("left-middle", event)}
+          />
+        )}
 
         {/* Middle Pane */}
-        <div className="pane middle-pane">
+        <div className="pane middle-pane" style={paneStyle(displayedPaneWidths.middle)}>
           <h3>{selectedConcept?.title || "Content"}</h3>
           {selectedConcept && (selectedConcept.pdf || selectedConcept.video) && (
             <div className="resource-row">
@@ -2778,10 +2947,148 @@ function App() {
         </div>
 
         {/* Right Pane */}
-        <div className="pane right-pane">
+        <div
+          className="pane-resize-handle"
+          role="separator"
+          aria-label="Resize content and next in story panes"
+          aria-orientation="vertical"
+          onPointerDown={(event) => startPaneResize("middle-right", event)}
+        />
+        <div className="pane right-pane" style={paneStyle(displayedPaneWidths.right)}>
           <div className="next-story-section">
             <h3>Next in Story!</h3>
-            {nextStoryConcepts.length === 0 ? (
+            {simpleTriangleOnly ? (
+              <div className="simple-triangle-container">
+                <svg
+                  className="simple-triangle-svg"
+                  width="720"
+                  height="420"
+                  viewBox="-24 -70 664 500"
+                  preserveAspectRatio="xMinYMid meet"
+                >
+                  <defs>
+                    <marker
+                      id="simple-triangle-leap-arrow"
+                      markerWidth="8"
+                      markerHeight="8"
+                      refX="7"
+                      refY="4"
+                      orient="auto"
+                      markerUnits="strokeWidth"
+                    >
+                      <path d="M0,0 L8,4 L0,8 Z" />
+                    </marker>
+                  </defs>
+                  <text
+                    className="simple-triangle-current-title"
+                    x="18"
+                  >
+                    {simpleTriangleTitleLines.map((line, index) => (
+                      <tspan
+                        key={`simple-title-line-${index}`}
+                        x="18"
+                        y={simpleTriangleTitleLines.length > 1 ? 176 + index * 20 : simpleTriangleOrigin.y + 4}
+                      >
+                        {line}
+                      </tspan>
+                    ))}
+                  </text>
+                  <circle
+                    className="simple-triangle-origin"
+                    cx={simpleTriangleOrigin.x}
+                    cy={simpleTriangleOrigin.y}
+                    r="4"
+                  />
+
+                  {simpleNextStoryConcepts.map((rel, idx) => {
+                    const point = simpleTrianglePoint(rel.angle, g_radius);
+                    const labelPoint = simpleTrianglePoint(rel.angle, g_radius + 34);
+                    const closeAngles =
+                      simpleNextStoryConcepts.length > 1 &&
+                      Math.abs(simpleNextStoryConcepts[0].angle - simpleNextStoryConcepts[1].angle) < 20;
+                    const bothAtExtremeEdge =
+                      closeAngles &&
+                      simpleNextStoryConcepts.every(
+                        (item) => item.angle < 20 || item.angle > 170
+                      );
+                    const xNudge = bothAtExtremeEdge && idx === 1 ? 168 : 10 + (idx === 0 ? 0 : 16);
+                    const yNudge = bothAtExtremeEdge
+                      ? -18
+                      : (idx === 0 ? -28 : 22) + (closeAngles && idx === 1 ? 18 : 0);
+                    const labelY = Math.min(360, Math.max(-48, labelPoint.y + yNudge));
+
+                    return (
+                      <g key={`simple-next-story-${rel.concept.id}`}>
+                        <line
+                          className="simple-triangle-next-line"
+                          x1={simpleTriangleOrigin.x}
+                          y1={simpleTriangleOrigin.y}
+                          x2={point.x}
+                          y2={point.y}
+                        />
+                        <circle
+                          className="simple-triangle-endpoint"
+                          cx={point.x}
+                          cy={point.y}
+                          r="5"
+                        />
+                        <foreignObject
+                          x={labelPoint.x + xNudge}
+                          y={labelY}
+                          width="170"
+                          height="58"
+                        >
+                          <button
+                            className="simple-triangle-choice"
+                            style={{ backgroundColor: getRelationColor(rel.angle) }}
+                            onClick={() =>
+                              handleSelectConcept(rel.concept, `j_NextinStory_${nextStoryOffset + idx + 1}`)
+                            }
+                          >
+                            {rel.concept.video && (
+                              <span className="simple-triangle-media-icon" aria-label="Has video" title="Video">
+                                ▶
+                              </span>
+                            )}
+                            {rel.concept.pdf && (
+                              <span className="simple-triangle-media-icon" aria-label="Has PDF" title="PDF">
+                                📄
+                              </span>
+                            )}
+                            <span>{rel.concept.title}</span>
+                          </button>
+                        </foreignObject>
+                      </g>
+                    );
+                  })}
+
+                  <line
+                    className="simple-triangle-leap-line"
+                    x1={simpleTriangleOrigin.x}
+                    y1={simpleTriangleOrigin.y}
+                    x2={leapPoint.x}
+                    y2={leapPoint.y}
+                    markerEnd="url(#simple-triangle-leap-arrow)"
+                  />
+                  <foreignObject x={leapPoint.x + 10} y={leapPoint.y - 18} width="120" height="42">
+                    <button
+                      className="simple-triangle-leap"
+                      onClick={handleLeapIntoUnknown}
+                      disabled={unseenConcepts.length === 0}
+                    >
+                      take a wild leap?
+                    </button>
+                  </foreignObject>
+                </svg>
+                <button
+                  className="other-suggestions-button"
+                  onClick={handleShowOtherSuggestions}
+                  disabled={!canShowOtherSuggestions}
+                >
+                  Want other suggestions?
+                </button>
+              </div>
+            ) : nextStoryConcepts.length === 0 ? (
               <p className="next-story-empty">
                 There are no new concepts from here that you have not already seen.
               </p>
@@ -2819,24 +3126,28 @@ function App() {
               </ul>
             )}
 
-            <button
-              className="other-suggestions-button"
-              onClick={handleShowOtherSuggestions}
-              disabled={!canShowOtherSuggestions}
-            >
-              Want other suggestions?
-            </button>
+            {!simpleTriangleOnly && (
+              <>
+                <button
+                  className="other-suggestions-button"
+                  onClick={handleShowOtherSuggestions}
+                  disabled={!canShowOtherSuggestions}
+                >
+                  Want other suggestions?
+                </button>
 
-            <div className="leap-section">
-              <p>Don't like any of our suggestions?</p>
-              <button
-                className="leap-button"
-                onClick={handleLeapIntoUnknown}
-                disabled={unseenConcepts.length === 0}
-              >
-                Leap into the unknown!
-              </button>
-            </div>
+                <div className="leap-section">
+                  <p>Don't like any of our suggestions?</p>
+                  <button
+                    className="leap-button"
+                    onClick={handleLeapIntoUnknown}
+                    disabled={unseenConcepts.length === 0}
+                  >
+                    Leap into the unknown!
+                  </button>
+                </div>
+              </>
+            )}
           </div>
 
           {showRelatedConcepts && (
@@ -2863,7 +3174,7 @@ function App() {
           )}
 
 
-          {showTriangles && (
+          {showTriangles && !simpleTriangleOnly && (
             <div className="semidisc-container">
               <svg
                 className="semidisc-svg"
