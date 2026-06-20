@@ -14,6 +14,7 @@ interface Concept {
   video: string;       // legacy single video field
   shortVideo?: string; // new
   longVideo?: string;  // new
+  valley?: string;
 }
 
 type ParsedSheet = {
@@ -99,13 +100,27 @@ const MAX_OTHER_SUGGESTION_CLICKS = 2;
 const INITIAL_HISTORY_CHOICE = "j_Start";
 const NEXT_STORY_ITEM_COLOR = "#fff8c6";
 const DIAL_NEUTRAL_COLOR = "#e6e6e6";
+const VALLEY_COLORS = [
+  "#70b77e",
+  "#f4a261",
+  "#6c91c2",
+  "#e76f51",
+  "#8ab17d",
+  "#b56576",
+  "#2a9d8f",
+  "#c9a227",
+  "#9d6b53",
+  "#5e8c61",
+  "#d67ab1",
+  "#7b8cde",
+];
 const GRAPH_WIDTH = 980;
 const GRAPH_HEIGHT = 640;
 const GRAPH_CENTER_X = GRAPH_WIDTH / 2 + 50;
 const GRAPH_CENTER_Y = GRAPH_HEIGHT / 2;
 const GRAPH_NODE_CLICK_ZOOM = 1.1;
-const APP_TITLE = "Your Body Wisdom Encyclopedia";
-// Former title: "The Book of Your Body Wisdom"
+const APP_TITLE = "Your Body Wisdom Wayfinder";
+// Former titles: "Your Body Wisdom Encyclopedia"; "The Book of Your Body Wisdom"
 const COMMENT_FORM_ACTION =
   "https://docs.google.com/forms/d/e/1FAIpQLSfRsy9X9bVI-CdppeEJzgSb3ZbIa7dqoELENtiVRuVue1M4lw/formResponse";
 const MAX_READER_HISTORY_LENGTH = 2000;
@@ -291,6 +306,7 @@ const parseSheet = (data: any[][]): ParsedSheet => {
   const videoCol = colIndexOf("video link");   // legacy single video column
   const shortVideoCol = colIndexOf("short video");
   const longVideoCol = colIndexOf("long video");
+  const valleyCol = colIndexOf("valley");
 
   if (idCol < 0 || titleCol < 0 || textCol < 0) {
     throw new Error("Missing one of required columns: ID, Title, and Entry Text/Text Entries/Entire.");
@@ -347,6 +363,7 @@ const parseSheet = (data: any[][]): ParsedSheet => {
     const legacyVideoRaw = videoCol >= 0 ? trimOrEmpty(row[videoCol]) : "";
     const shortVideoRaw = shortVideoCol >= 0 ? trimOrEmpty(row[shortVideoCol]) : "";
     const longVideoRaw = longVideoCol >= 0 ? trimOrEmpty(row[longVideoCol]) : "";
+    const valleyRaw = valleyCol >= 0 ? String(trimOrEmpty(row[valleyCol])) : "";
 
     // Prefer newer video columns when present; fall back to the legacy single video link.
     const videoRaw = shortVideoRaw || longVideoRaw || legacyVideoRaw;
@@ -359,6 +376,7 @@ const parseSheet = (data: any[][]): ParsedSheet => {
       video: videoRaw,
       shortVideo: shortVideoRaw,
       longVideo: longVideoRaw,
+      valley: valleyRaw,
     });
   }
 
@@ -800,6 +818,25 @@ function ConceptGraph({
     panX: number;
     panY: number;
   } | null>(null);
+  const valleyLegendItems = React.useMemo(() => {
+    const valleys = Array.from(
+      new Set(
+        concepts
+          .map((concept) => String(concept.valley ?? "").trim())
+          .filter(Boolean)
+      )
+    ).sort((a, b) => a.localeCompare(b));
+
+    return valleys.map((valley, index) => ({
+      valley,
+      color: VALLEY_COLORS[index % VALLEY_COLORS.length],
+    }));
+  }, [concepts]);
+  const valleyColorByName = React.useMemo(
+    () => new Map(valleyLegendItems.map((item) => [item.valley, item.color])),
+    [valleyLegendItems]
+  );
+  const hasValleyColors = valleyLegendItems.length > 0;
 
   React.useEffect(() => {
     return () => {
@@ -953,6 +990,7 @@ function ConceptGraph({
   const graphTransform = `translate(${graphPan.x}, ${graphPan.y}) ${baseGraphTransform}`;
   const showHistoryPathLines = pathMode !== "hide";
   const showPathwayLegend = pathMode === "detailed";
+  const valleyLegendHeight = 34 + valleyLegendItems.length * 18;
   const zoomIn = () => setZoomScale((scale) => Math.min(scale * 1.25, 4));
   const zoomOut = () => setZoomScale((scale) => Math.max(scale / 1.25, 0.6));
   const handleGraphWheel = (event: React.WheelEvent<SVGSVGElement>) => {
@@ -1150,14 +1188,20 @@ function ConceptGraph({
             const isHistory = historyConceptIds.has(node.concept.id);
             const isNextStory = nextStoryConceptIds.has(node.concept.id);
             const isHovered = hoveredGraphConceptId === node.concept.id;
-            const hasMedia = Boolean(node.concept.pdf || node.concept.video);
+            const hasVideo = Boolean(node.concept.video);
+            const hasPdf = Boolean(node.concept.pdf);
+            const hasMedia = hasVideo || hasPdf;
             const mediaLabel = node.concept.video ? "Video" : node.concept.pdf ? "PDF" : "";
             const graphNodeLabel =
               isHovered && mediaLabel
                 ? `${mediaLabel}: ${node.concept.title}`
                 : node.concept.title;
             const showLabel = isSelected || isHistory || isNextStory || isHovered || (isZoomed && isRelated);
-            const fill = isSelected
+            const valley = String(node.concept.valley ?? "").trim();
+            const valleyFill = valleyColorByName.get(valley);
+            const fill = hasValleyColors
+              ? valleyFill ?? "#d9eef7"
+              : isSelected
               ? "#0f4c81"
               : isRelated
               ? getRelationColor(relationAngle)
@@ -1166,6 +1210,17 @@ function ConceptGraph({
               : isNextStory
               ? NEXT_STORY_ITEM_COLOR
               : "#d9eef7";
+            const nodeRadius = isSelected ? 10 : isRelated ? 8 : 6;
+            const nodeStroke = isHistory
+              ? "#c1121f"
+              : isNextStory
+              ? "#d6b800"
+              : isSelected
+              ? "#061f35"
+              : isRelated
+              ? "#222"
+              : "#4b7f95";
+            const nodeStrokeWidth = isHistory ? 3 : isNextStory ? 2.4 : isSelected ? 3 : isRelated ? 2 : 1.2;
 
             return (
               <g
@@ -1187,21 +1242,31 @@ function ConceptGraph({
                 }}
               >
                 {hasMedia ? (
-                  <rect
-                    x={-(isSelected ? 10 : isRelated ? 8 : 6)}
-                    y={-(isSelected ? 10 : isRelated ? 8 : 6)}
-                    width={(isSelected ? 10 : isRelated ? 8 : 6) * 2}
-                    height={(isSelected ? 10 : isRelated ? 8 : 6) * 2}
-                    fill={fill}
-                    stroke={isHistory ? "#c1121f" : isNextStory ? "#d6b800" : isSelected ? "#061f35" : isRelated ? "#222" : "#4b7f95"}
-                    strokeWidth={isHistory ? 3 : isNextStory ? 2.4 : isSelected ? 3 : isRelated ? 2 : 1.2}
-                  />
+                  <>
+                    <circle
+                      r={nodeRadius}
+                      fill={fill}
+                      stroke={nodeStroke}
+                      strokeWidth={nodeStrokeWidth}
+                    />
+                    {hasVideo ? (
+                      <path
+                        className="graph-media-icon"
+                        d="M-3.2,-4.5 L-3.2,4.5 L5,0 Z"
+                      />
+                    ) : (
+                      <path
+                        className="graph-media-icon"
+                        d="M-4.5,-5.5 H1.5 L4.5,-2.5 V5.5 H-4.5 Z M1.5,-5.5 V-2.5 H4.5"
+                      />
+                    )}
+                  </>
                 ) : (
                   <circle
-                    r={isSelected ? 10 : isRelated ? 8 : 6}
+                    r={nodeRadius}
                     fill={fill}
-                    stroke={isHistory ? "#c1121f" : isNextStory ? "#d6b800" : isSelected ? "#061f35" : isRelated ? "#222" : "#4b7f95"}
-                    strokeWidth={isHistory ? 3 : isNextStory ? 2.4 : isSelected ? 3 : isRelated ? 2 : 1.2}
+                    stroke={nodeStroke}
+                    strokeWidth={nodeStrokeWidth}
                   />
                 )}
                 {showLabel && (
@@ -1219,6 +1284,31 @@ function ConceptGraph({
             );
           })}
         </g>
+        {hasValleyColors && (
+          <g className="graph-valley-legend" transform={`translate(${GRAPH_WIDTH - 220}, 18)`}>
+            <rect className="graph-valley-legend-bg" width="202" height={valleyLegendHeight} rx="4" />
+            <text className="graph-valley-legend-title" x="12" y="22">
+              Valley
+            </text>
+            {valleyLegendItems.map((item, index) => {
+              const y = 45 + index * 18;
+              return (
+                <g key={item.valley} transform={`translate(12, ${y})`}>
+                  <circle
+                    className="graph-valley-legend-swatch"
+                    cx="6"
+                    cy="-4"
+                    r="6"
+                    fill={item.color}
+                  />
+                  <text className="graph-valley-legend-label" x="20" y="0">
+                    {item.valley}
+                  </text>
+                </g>
+              );
+            })}
+          </g>
+        )}
         {showPathwayLegend && (
         <g className="graph-pathway-legend" transform={`translate(18, ${GRAPH_HEIGHT - 184})`}>
           <rect className="graph-pathway-legend-bg" width="178" height="166" rx="4" />
@@ -1904,8 +1994,15 @@ function App() {
   const handleLeapIntoUnknown = () => {
     if (unseenConcepts.length === 0) return;
 
-    const randomIndex = Math.floor(Math.random() * unseenConcepts.length);
-    handleSelectConcept(unseenConcepts[randomIndex], "j_Leap");
+    const currentValley = String(selectedConcept?.valley ?? "").trim().toLowerCase();
+    const crossValleyConcepts = currentValley
+      ? unseenConcepts.filter(
+          (concept) => String(concept.valley ?? "").trim().toLowerCase() !== currentValley
+        )
+      : [];
+    const leapCandidates = crossValleyConcepts.length > 0 ? crossValleyConcepts : unseenConcepts;
+    const randomIndex = Math.floor(Math.random() * leapCandidates.length);
+    handleSelectConcept(leapCandidates[randomIndex], "j_Leap");
   };
 
   const handleShowOtherSuggestions = () => {
@@ -2699,7 +2796,19 @@ function App() {
                       handleSelectConcept(rel.concept, `j_NextinStory_${nextStoryOffset + idx + 1}`)
                     }
                   >
-                    {rel.concept.title}
+                    <span className="next-story-title">
+                      {rel.concept.video && (
+                        <span className="next-story-media-icon" aria-label="Has video" title="Video">
+                          ▶
+                        </span>
+                      )}
+                      {rel.concept.pdf && (
+                        <span className="next-story-media-icon" aria-label="Has PDF" title="PDF">
+                          📄
+                        </span>
+                      )}
+                      <span>{rel.concept.title}</span>
+                    </span>
                     {showStrengthsAndAngles && (
                       <span className="next-story-meta">
                         {" "}(strength {rel.strength}, angle {rel.angle})
