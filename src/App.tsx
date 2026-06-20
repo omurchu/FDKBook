@@ -1123,7 +1123,6 @@ function ConceptGraph({
         role="img"
         onWheel={handleGraphWheel}
       >
-        <title>Concept strength network</title>
         <defs>
           <marker
             id="history-arrowhead"
@@ -1308,10 +1307,10 @@ function ConceptGraph({
           })}
         </g>
         {hasValleyColors && (
-          <g className="graph-valley-legend" transform={`translate(${GRAPH_WIDTH - 220}, 18)`}>
+          <g className="graph-valley-legend" transform="translate(18, 18)">
             <rect className="graph-valley-legend-bg" width="202" height={valleyLegendHeight} rx="4" />
             <text className="graph-valley-legend-title" x="12" y="22">
-              Valley
+              The Valleys
             </text>
             {valleyLegendItems.map((item, index) => {
               const y = 45 + index * 18;
@@ -1334,16 +1333,16 @@ function ConceptGraph({
         )}
         {showPathwayLegend && (
         <g className="graph-pathway-legend" transform={`translate(18, ${GRAPH_HEIGHT - 184})`}>
-          <rect className="graph-pathway-legend-bg" width="178" height="166" rx="4" />
+          <rect className="graph-pathway-legend-bg" width="202" height="166" rx="4" />
           <text className="graph-pathway-legend-title" x="12" y="22">
-            Pathways
+            How you travelled
           </text>
           {[
             { label: "Next in Story", className: "graph-history-path-next-story" },
-            { label: "Leap", className: "graph-history-path-leap" },
-            { label: "History", className: "graph-history-path-history" },
+            { label: "A wild leap", className: "graph-history-path-leap" },
+            { label: "Reading history", className: "graph-history-path-history" },
             { label: "TOC", className: "graph-history-path-toc" },
-            { label: "Node", className: "graph-history-path-node" },
+            { label: "Selected graph node", className: "graph-history-path-node" },
             { label: "Current suggestions", className: "graph-next-story-link" },
           ].map((item, index) => {
             const y = 45 + index * 18;

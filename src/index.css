@@ -1287,7 +1287,7 @@ body, html, #root {
 }
 
 .graph-valley-legend-bg {
-  fill: rgba(255, 255, 255, 0.92);
+  fill: rgba(255, 255, 255, 0.5);
   stroke: #cfd4dc;
 }
 
@@ -1312,7 +1312,7 @@ body, html, #root {
 }
 
 .graph-pathway-legend-bg {
-  fill: rgba(255, 255, 255, 0.92);
+  fill: rgba(255, 255, 255, 0.5);
   stroke: #cfd4dc;
 }
 
