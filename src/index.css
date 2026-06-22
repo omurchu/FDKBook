@@ -634,6 +634,51 @@ body, html, #root {
   color: #153f6a;
 }
 
+.definition-term {
+  position: relative;
+  color: #7b2cbf;
+  font-weight: 600;
+  border-bottom: 1px dotted currentColor;
+  cursor: help;
+}
+
+.definition-term:hover,
+.definition-term:focus {
+  outline: none;
+  color: #5a189a;
+}
+
+.definition-term:hover::after,
+.definition-term:focus::after {
+  content: attr(data-definition);
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 0.35rem);
+  z-index: 20;
+  width: max-content;
+  max-width: min(22rem, 70vw);
+  padding: 0.45rem 0.6rem;
+  color: #fff;
+  background: #3a0a5f;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
+  font-size: 0.85rem;
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.definition-term:hover::before,
+.definition-term:focus::before {
+  content: "";
+  position: absolute;
+  left: 0.6rem;
+  bottom: calc(100% + 0.05rem);
+  z-index: 21;
+  border: 0.35rem solid transparent;
+  border-top-color: #3a0a5f;
+}
+
 
 /* Styled Choose File button */
 .file-button {

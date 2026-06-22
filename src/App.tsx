@@ -25,6 +25,19 @@ type ParsedSheet = {
   n: number;
 };
 
+type ConceptDefinition = {
+  word: string;
+  variants: string[];
+  definition: string;
+};
+
+type WorkbookData = {
+  matrixData: any[][];
+  definitions: ConceptDefinition[];
+  definitionsData: any[][];
+  definitionsSheetName: string;
+};
+
 type ActiveTab = "home" | "graph";
 type PathMode = "hide" | "simple" | "detailed";
 
@@ -49,6 +62,7 @@ type MatrixQaSeverity = "Info" | "Warning" | "Error";
 
 type MatrixQaIssue = {
   severity: MatrixQaSeverity;
+  sheet?: string;
   id?: number;
   title?: string;
   row?: number;
@@ -71,6 +85,8 @@ type MatrixQaReport = {
   matrixSize: number;
   headerRow: number;
   matrixStartColumn: number;
+  definitionsSheetName: string;
+  definitionsCount: number;
   issues: MatrixQaIssue[];
 };
 
@@ -139,7 +155,7 @@ const GRAPH_HEIGHT = 640;
 const GRAPH_CENTER_X = GRAPH_WIDTH / 2 + 50;
 const GRAPH_CENTER_Y = GRAPH_HEIGHT / 2;
 const GRAPH_NODE_CLICK_ZOOM = 1.1;
-const APP_TITLE = "Your Body Wisdom Wayfinder";
+const APP_TITLE = "Wayfinding";
 // Former titles: "Your Body Wisdom Encyclopedia"; "The Book of Your Body Wisdom"
 const COMMENT_FORM_ACTION =
   "https://docs.google.com/forms/d/e/1FAIpQLSfRsy9X9bVI-CdppeEJzgSb3ZbIa7dqoELENtiVRuVue1M4lw/formResponse";
@@ -202,7 +218,75 @@ const getGraphHistoryPathClass = (choice: string) => {
   return "graph-history-path-next-story";
 };
 
-const renderTextWithLinks = (text: string) => {
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const buildDefinitionTerms = (definitions: ConceptDefinition[]) =>
+  definitions
+    .flatMap((entry) =>
+      [entry.word, ...entry.variants]
+        .map((term) => term.trim())
+        .filter(Boolean)
+        .map((term) => ({ term, definition: entry.definition, word: entry.word }))
+    )
+    .sort((a, b) => b.term.length - a.term.length);
+
+const renderTextWithDefinitions = (
+  text: string,
+  definitions: ConceptDefinition[],
+  keyPrefix: string
+) => {
+  const terms = buildDefinitionTerms(definitions);
+  if (terms.length === 0) return [text];
+
+  const termByLower = new Map<string, typeof terms[number]>();
+  terms.forEach((entry) => {
+    const key = entry.term.toLowerCase();
+    if (!termByLower.has(key)) termByLower.set(key, entry);
+  });
+
+  const pattern = new RegExp(
+    `(^|[^A-Za-z0-9])(${terms.map((entry) => escapeRegExp(entry.term)).join("|")})(?=$|[^A-Za-z0-9])`,
+    "gi"
+  );
+  const nodes: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(text)) !== null) {
+    const prefix = match[1] ?? "";
+    const matchedTerm = match[2] ?? "";
+    const termStart = match.index + prefix.length;
+    const termEnd = termStart + matchedTerm.length;
+    const definitionEntry = termByLower.get(matchedTerm.toLowerCase());
+
+    if (!definitionEntry) continue;
+
+    if (termStart > lastIndex) {
+      nodes.push(text.slice(lastIndex, termStart));
+    }
+
+    nodes.push(
+      <span
+        key={`${keyPrefix}-definition-${termStart}`}
+        className="definition-term"
+        data-definition={definitionEntry.definition}
+        title={definitionEntry.definition}
+        tabIndex={0}
+      >
+        {matchedTerm}
+      </span>
+    );
+    lastIndex = termEnd;
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+
+  return nodes;
+};
+
+const renderTextWithLinks = (text: string, definitions: ConceptDefinition[] = []) => {
   const nodes: React.ReactNode[] = [];
   const linkPattern = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
   let lastIndex = 0;
@@ -210,7 +294,13 @@ const renderTextWithLinks = (text: string) => {
 
   while ((match = linkPattern.exec(text)) !== null) {
     if (match.index > lastIndex) {
-      nodes.push(text.slice(lastIndex, match.index));
+      nodes.push(
+        ...renderTextWithDefinitions(
+          text.slice(lastIndex, match.index),
+          definitions,
+          `content-${lastIndex}`
+        )
+      );
     }
 
     nodes.push(
@@ -227,7 +317,9 @@ const renderTextWithLinks = (text: string) => {
   }
 
   if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
+    nodes.push(
+      ...renderTextWithDefinitions(text.slice(lastIndex), definitions, `content-${lastIndex}`)
+    );
   }
 
   return nodes;
@@ -288,10 +380,67 @@ const isWellFormedMatrixCell = (raw: any) => {
   return !Number.isNaN(Number(s));
 };
 
-const readFirstSheetData = (buffer: ArrayBuffer) => {
+const parseDefinitionsSheet = (wb: XLSX.WorkBook): ConceptDefinition[] => {
+  const definitionsSheetName =
+    wb.SheetNames.find((sheetName) => norm(sheetName) === "definitions") ?? wb.SheetNames[1];
+  if (!definitionsSheetName) return [];
+
+  const ws = wb.Sheets[definitionsSheetName];
+  if (!ws) return [];
+
+  const data = XLSX.utils.sheet_to_json(ws, { header: 1 }) as any[][];
+  let headerRowIdx = -1;
+  for (let r = 0; r < Math.min(20, data.length); r++) {
+    const rowNorm = (data[r] ?? []).map(norm);
+    if (rowNorm.includes("word") && rowNorm.includes("definition")) {
+      headerRowIdx = r;
+      break;
+    }
+  }
+
+  if (headerRowIdx < 0) return [];
+
+  const header = data[headerRowIdx] ?? [];
+  const colIndexOf = (label: string) => header.findIndex((c: any) => norm(c) === label);
+  const wordCol = colIndexOf("word");
+  const variantsCol = colIndexOf("variants");
+  const definitionCol = colIndexOf("definition");
+
+  if (wordCol < 0 || definitionCol < 0) return [];
+
+  return data
+    .slice(headerRowIdx + 1)
+    .map((row) => {
+      const word = String(trimOrEmpty(row[wordCol]));
+      const variants =
+        variantsCol >= 0
+          ? String(trimOrEmpty(row[variantsCol]))
+              .split(";")
+              .map((variant) => variant.trim())
+              .filter(Boolean)
+          : [];
+      const definition = String(trimOrEmpty(row[definitionCol]));
+
+      return { word, variants, definition };
+    })
+    .filter((entry) => entry.word && entry.definition);
+};
+
+const readWorkbookData = (buffer: ArrayBuffer): WorkbookData => {
   const wb = XLSX.read(buffer, { type: "array" });
   const ws = wb.Sheets[wb.SheetNames[0]];
-  return XLSX.utils.sheet_to_json(ws, { header: 1 }) as any[][];
+  const definitionsSheetName =
+    wb.SheetNames.find((sheetName) => norm(sheetName) === "definitions") ?? "";
+  const definitionsData = definitionsSheetName
+    ? (XLSX.utils.sheet_to_json(wb.Sheets[definitionsSheetName], { header: 1 }) as any[][])
+    : [];
+
+  return {
+    matrixData: XLSX.utils.sheet_to_json(ws, { header: 1 }) as any[][],
+    definitions: parseDefinitionsSheet(wb),
+    definitionsData,
+    definitionsSheetName,
+  };
 };
 
 const parseSheet = (data: any[][]): ParsedSheet => {
@@ -470,9 +619,12 @@ const analyzeMatrixData = (data: any[][], sourceName: string): MatrixQaReport =>
       matrixSize: 0,
       headerRow: 0,
       matrixStartColumn: 0,
+      definitionsSheetName: "",
+      definitionsCount: 0,
       issues: [
         {
           severity: "Error",
+          sheet: "Sheet",
           message: "Could not find a header row containing ID and Title.",
         },
       ],
@@ -519,6 +671,8 @@ const analyzeMatrixData = (data: any[][], sourceName: string): MatrixQaReport =>
       matrixSize: 0,
       headerRow: headerRowIdx + 1,
       matrixStartColumn: 0,
+      definitionsSheetName: "",
+      definitionsCount: 0,
       issues,
     };
   }
@@ -798,8 +952,206 @@ const analyzeMatrixData = (data: any[][], sourceName: string): MatrixQaReport =>
     matrixSize,
     headerRow: headerRowIdx + 1,
     matrixStartColumn: matrixStartCol + 1,
+    definitionsSheetName: "",
+    definitionsCount: 0,
     issues,
   };
+};
+
+const findDefinitionsHeaderRow = (data: any[][]) => {
+  for (let r = 0; r < Math.min(20, data.length); r++) {
+    const rowNorm = (data[r] ?? []).map(norm);
+    if (rowNorm.includes("word") || rowNorm.includes("variants") || rowNorm.includes("definition")) {
+      return r;
+    }
+  }
+
+  return -1;
+};
+
+const termAppearsInConceptText = (term: string, concepts: Concept[]) => {
+  const pattern = new RegExp(`(^|[^A-Za-z0-9])${escapeRegExp(term)}(?=$|[^A-Za-z0-9])`, "i");
+  return concepts.some((concept) => pattern.test(concept.entire));
+};
+
+const analyzeDefinitionsData = (
+  workbookData: WorkbookData,
+  concepts: Concept[]
+): { issues: MatrixQaIssue[]; definitionsCount: number } => {
+  const issues: MatrixQaIssue[] = [];
+  const sheetName = workbookData.definitionsSheetName || "definitions";
+
+  if (!workbookData.definitionsSheetName) {
+    return {
+      definitionsCount: 0,
+      issues: [
+        {
+          severity: "Warning",
+          sheet: "definitions",
+          message: "Definitions sheet is missing. Add a second tab named definitions with Word, Variants, and Definition columns.",
+        },
+      ],
+    };
+  }
+
+  const data = workbookData.definitionsData;
+  const headerRowIdx = findDefinitionsHeaderRow(data);
+  if (headerRowIdx < 0) {
+    return {
+      definitionsCount: 0,
+      issues: [
+        {
+          severity: "Error",
+          sheet: sheetName,
+          message: "Definitions sheet is missing a header row with Word, Variants, and Definition columns.",
+        },
+      ],
+    };
+  }
+
+  const header = data[headerRowIdx] ?? [];
+  const colIndexOf = (label: string) => header.findIndex((c: any) => norm(c) === label);
+  const wordCol = colIndexOf("word");
+  const variantsCol = colIndexOf("variants");
+  const definitionCol = colIndexOf("definition");
+
+  if (wordCol < 0) {
+    issues.push({
+      severity: "Error",
+      sheet: sheetName,
+      row: headerRowIdx + 1,
+      message: "Definitions sheet is missing required Word column.",
+    });
+  }
+  if (variantsCol < 0) {
+    issues.push({
+      severity: "Warning",
+      sheet: sheetName,
+      row: headerRowIdx + 1,
+      message: "Definitions sheet is missing Variants column. Word matches will still work.",
+    });
+  }
+  if (definitionCol < 0) {
+    issues.push({
+      severity: "Error",
+      sheet: sheetName,
+      row: headerRowIdx + 1,
+      message: "Definitions sheet is missing required Definition column.",
+    });
+  }
+
+  if (wordCol < 0 || definitionCol < 0) {
+    return { issues, definitionsCount: 0 };
+  }
+
+  const seenTerms = new Map<string, { term: string; row: number; definition: string }>();
+  let definitionsCount = 0;
+
+  data.slice(headerRowIdx + 1).forEach((row, offset) => {
+    const rowNumber = headerRowIdx + offset + 2;
+    const word = String(trimOrEmpty(row[wordCol]));
+    const definition = String(trimOrEmpty(row[definitionCol]));
+    const rawVariants = variantsCol >= 0 ? String(trimOrEmpty(row[variantsCol])) : "";
+    const variants = rawVariants.split(";").map((variant) => variant.trim());
+    const nonEmptyVariants = variants.filter(Boolean);
+    const isEmptyRow = row.every((cell) => String(cell ?? "").trim() === "");
+
+    if (isEmptyRow) return;
+
+    if (!word) {
+      issues.push({
+        severity: "Error",
+        sheet: sheetName,
+        row: rowNumber,
+        column: wordCol + 1,
+        message: "Definition row is missing a Word.",
+      });
+    }
+
+    if (!definition) {
+      issues.push({
+        severity: "Error",
+        sheet: sheetName,
+        row: rowNumber,
+        column: definitionCol + 1,
+        message: "Definition row is missing a Definition.",
+      });
+    }
+
+    if (rawVariants && variants.some((variant) => variant === "")) {
+      issues.push({
+        severity: "Info",
+        sheet: sheetName,
+        row: rowNumber,
+        column: variantsCol + 1,
+        message: "Variants has an empty item between semicolons.",
+      });
+    }
+
+    const terms = [word, ...nonEmptyVariants].filter(Boolean);
+    if (word && definition) definitionsCount++;
+
+    terms.forEach((term) => {
+      const key = term.toLowerCase();
+      const previous = seenTerms.get(key);
+
+      if (previous) {
+        issues.push({
+          severity: previous.definition === definition ? "Warning" : "Error",
+          sheet: sheetName,
+          row: rowNumber,
+          message:
+            previous.definition === definition
+              ? `Duplicate definition term "${term}" also appears on row ${previous.row}.`
+              : `Definition term "${term}" also appears on row ${previous.row} with a different definition.`,
+        });
+      } else {
+        seenTerms.set(key, { term, row: rowNumber, definition });
+      }
+
+      if (!termAppearsInConceptText(term, concepts)) {
+        issues.push({
+          severity: "Info",
+          sheet: sheetName,
+          row: rowNumber,
+          message: `Definition term "${term}" was not found in any Entry Text.`,
+        });
+      }
+    });
+  });
+
+  if (definitionsCount === 0 && issues.every((issue) => issue.severity !== "Error")) {
+    issues.push({
+      severity: "Warning",
+      sheet: sheetName,
+      message: "Definitions sheet has no usable definition rows.",
+    });
+  }
+
+  return { issues, definitionsCount };
+};
+
+const analyzeWorkbookData = (workbookData: WorkbookData, sourceName: string): MatrixQaReport => {
+  const report = analyzeMatrixData(workbookData.matrixData, sourceName);
+
+  try {
+    const parsed = parseSheet(workbookData.matrixData);
+    const definitionsQa = analyzeDefinitionsData(workbookData, parsed.concepts);
+    return {
+      ...report,
+      definitionsSheetName: workbookData.definitionsSheetName || "",
+      definitionsCount: definitionsQa.definitionsCount,
+      issues: [...report.issues, ...definitionsQa.issues],
+    };
+  } catch {
+    const definitionsQa = analyzeDefinitionsData(workbookData, []);
+    return {
+      ...report,
+      definitionsSheetName: workbookData.definitionsSheetName || "",
+      definitionsCount: definitionsQa.definitionsCount,
+      issues: [...report.issues, ...definitionsQa.issues],
+    };
+  }
 };
 
 function ConceptGraph({
@@ -1370,6 +1722,7 @@ function ConceptGraph({
 
 function App() {
   const [concepts, setConcepts] = useState<Concept[]>([]);
+  const [definitions, setDefinitions] = useState<ConceptDefinition[]>([]);
   const [angleMatrix, setAngleMatrix] = useState<number[][]>([]);  // Added angleMatrix state 0-180 degrees
   const [strengthMatrix, setStrengthMatrix] = useState<number[][]>([]); // Added strengthMatrix state 0-5
   const [selectedConcept, setSelectedConcept] = useState<Concept | null>(null);
@@ -1443,16 +1796,18 @@ function App() {
   } | null>(null);
 
   const loadFromArrayBuffer = React.useCallback((buffer: ArrayBuffer, sourceLabel: string) => {
-    const data = readFirstSheetData(buffer);
-    const parsed = parseSheet(data);
+    const workbookData = readWorkbookData(buffer);
+    const parsed = parseSheet(workbookData.matrixData);
     setLoadError("");
 
     console.log(
       `${sourceLabel}: loaded ${parsed.n} concepts; ` +
-      (parsed.foundTuples ? "detected tuple 'strength; angle' format" : "using legacy angle-only format")
+      (parsed.foundTuples ? "detected tuple 'strength; angle' format" : "using legacy angle-only format") +
+      `; loaded ${workbookData.definitions.length} definitions`
     );
 
     setConcepts(parsed.concepts);
+    setDefinitions(workbookData.definitions);
     setAngleMatrix(parsed.angleMatrix);
     setStrengthMatrix(parsed.strengthMatrix);
 
@@ -1860,7 +2215,7 @@ function App() {
 
     try {
       loadFromArrayBuffer(buffer, "User upload");
-      setMatrixQaReport(analyzeMatrixData(readFirstSheetData(buffer), file.name));
+      setMatrixQaReport(analyzeWorkbookData(readWorkbookData(buffer), file.name));
       setShowMatrixQaReport(true);
       try {
         window.localStorage.setItem(SAVED_MATRIX_KEY, bufferToBase64(buffer));
@@ -2230,7 +2585,7 @@ function App() {
             role="tab"
             aria-selected={activeTab === "graph"}
           >
-            Trace
+            Path
           </button>
         </div>
         {showSearch && (
@@ -2611,6 +2966,11 @@ function App() {
           <p className="matrix-qa-summary">
             {matrixQaReport.sourceName} · {matrixQaReport.matrixSize} matrix entries · header row{" "}
             {matrixQaReport.headerRow}, matrix starts at column {matrixQaReport.matrixStartColumn} ·{" "}
+            definitions:{" "}
+            {matrixQaReport.definitionsSheetName
+              ? `${matrixQaReport.definitionsCount} rows in ${matrixQaReport.definitionsSheetName}`
+              : "missing"}{" "}
+            Â·{" "}
             {matrixQaReport.issues.filter((issue) => issue.severity === "Error").length} errors,{" "}
             {matrixQaReport.issues.filter((issue) => issue.severity === "Warning").length} warnings
           </p>
@@ -2624,6 +2984,7 @@ function App() {
                 <thead>
                   <tr>
                     <th>Severity</th>
+                    <th>Sheet</th>
                     <th>ID</th>
                     <th>Title</th>
                     <th>Row</th>
@@ -2638,6 +2999,7 @@ function App() {
                       <td className={`matrix-qa-severity matrix-qa-${issue.severity.toLowerCase()}`}>
                         {issue.severity}
                       </td>
+                      <td>{issue.sheet ?? "Sheet"}</td>
                       <td>{issue.id ?? ""}</td>
                       <td>{issue.title ?? ""}</td>
                       <td>{issue.row ?? ""}</td>
@@ -2769,7 +3131,7 @@ function App() {
           )}
 
           <div className="content-box">
-            {selectedConcept?.entire ? renderTextWithLinks(selectedConcept.entire) : null}
+            {selectedConcept?.entire ? renderTextWithLinks(selectedConcept.entire, definitions) : null}
           </div>
           <div className="nav-buttons">
             <button onClick={handleBack} disabled={historyIndex <= 0}>
@@ -2822,7 +3184,7 @@ function App() {
           <div className="comment-form-section">
             <h3>Alpha Testers</h3>
             <p>
-              Alpha testers, please comment at least every 5 entries or so, as this helps our nascent tracking system.
+              Please comment at least every 5 entries or so, as this helps our nascent tracking system.
             </p>
             <form
               ref={commentFormRef}
@@ -2835,7 +3197,7 @@ function App() {
               <div className="alpha-tester-name-row">
                 {!alphaTesterNameSubmitted && (
                   <p className="alpha-tester-name-prompt">
-                    Alpha Testers please enter your name and click the Submit button
+                    Please enter your name and click the Submit button
                   </p>
                 )}
                 <label htmlFor="alpha-tester-name">Alpha tester name</label>
@@ -3075,7 +3437,7 @@ function App() {
                       onClick={handleLeapIntoUnknown}
                       disabled={unseenConcepts.length === 0}
                     >
-                      take a wild leap?
+                      <strong>take a wild leap?</strong>
                     </button>
                   </foreignObject>
                 </svg>
