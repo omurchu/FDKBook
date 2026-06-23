@@ -623,6 +623,7 @@ body, html, #root {
   padding: 0.75rem;
   margin-bottom: 1rem;
   background-color: #fafafa;
+  white-space: pre-wrap;
 }
 
 .middle-pane .content-box a {
@@ -1075,6 +1076,8 @@ body, html, #root {
 .simple-triangle-choice,
 .simple-triangle-leap {
   width: 100%;
+  height: 100%;
+  box-sizing: border-box;
   min-height: 1.85rem;
   padding: 0.22rem 0.4rem;
   border: 1px solid #888;
@@ -1085,6 +1088,10 @@ body, html, #root {
   line-height: 1.15;
   text-align: left;
   white-space: normal;
+  -webkit-appearance: none;
+  appearance: none;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
 }
 
 .simple-triangle-choice {
@@ -1107,7 +1114,7 @@ body, html, #root {
 
 .simple-triangle-choice:hover,
 .simple-triangle-leap:hover:not(:disabled) {
-  filter: brightness(0.97);
+  box-shadow: inset 0 0 0 999px rgba(255, 255, 255, 0.14);
 }
 
 .simple-triangle-leap {
