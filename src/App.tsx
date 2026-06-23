@@ -156,7 +156,7 @@ const GRAPH_CENTER_X = GRAPH_WIDTH / 2 + 50;
 const GRAPH_CENTER_Y = GRAPH_HEIGHT / 2;
 const GRAPH_NODE_CLICK_ZOOM = 1.1;
 const APP_TITLE = "Wayfinding";
-const DEPLOYMENT_LABEL = "Wayfinder Alpha Deployed June 22, 2026, 8:06 PM PDT";
+const DEPLOYMENT_LABEL = "Wayfinder Alpha Deployed June 22, 2026, 10:55 PM PDT";
 // Former titles: "Your Body Wisdom Encyclopedia"; "The Book of Your Body Wisdom"
 const COMMENT_FORM_ACTION =
   "https://docs.google.com/forms/d/e/1FAIpQLSfRsy9X9bVI-CdppeEJzgSb3ZbIa7dqoELENtiVRuVue1M4lw/formResponse";
@@ -2525,6 +2525,8 @@ function App() {
   };
   const simpleNextStoryConcepts = nextStoryConcepts.slice(0, INITIAL_NEXT_STORY_COUNT);
   const leapPoint = simpleTrianglePoint(90, g_radius * 2);
+  const simpleLeapLabelWidth = 120;
+  const simpleLeapLabelX = Math.min(leapPoint.x + 10, 640 - simpleLeapLabelWidth - 4);
   const displayedHistory = history
     .map((entry, index) => ({ ...entry, index }))
     .reverse();
@@ -3433,7 +3435,12 @@ function App() {
                     y2={leapPoint.y}
                     markerEnd="url(#simple-triangle-leap-arrow)"
                   />
-                  <foreignObject x={leapPoint.x + 10} y={leapPoint.y - 18} width="120" height="42">
+                  <foreignObject
+                    x={simpleLeapLabelX}
+                    y={leapPoint.y - 18}
+                    width={simpleLeapLabelWidth}
+                    height="42"
+                  >
                     <button
                       className="simple-triangle-leap"
                       onClick={handleLeapIntoUnknown}
