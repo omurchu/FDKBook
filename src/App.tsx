@@ -156,7 +156,7 @@ const GRAPH_CENTER_X = GRAPH_WIDTH / 2 + 50;
 const GRAPH_CENTER_Y = GRAPH_HEIGHT / 2;
 const GRAPH_NODE_CLICK_ZOOM = 1.1;
 const APP_TITLE = "Wayfinding";
-const DEPLOYMENT_LABEL = "Wayfinder Alpha Deployed June 22, 2026, 10:55 PM PDT";
+const DEPLOYMENT_LABEL = "Wayfinder Alpha Deployed June 23, 2026, 9:34 PM PDT";
 // Former titles: "Your Body Wisdom Encyclopedia"; "The Book of Your Body Wisdom"
 const COMMENT_FORM_ACTION =
   "https://docs.google.com/forms/d/e/1FAIpQLSfRsy9X9bVI-CdppeEJzgSb3ZbIa7dqoELENtiVRuVue1M4lw/formResponse";
@@ -236,7 +236,8 @@ const buildDefinitionTerms = (definitions: ConceptDefinition[]) =>
 const renderTextWithDefinitions = (
   text: string,
   definitions: ConceptDefinition[],
-  keyPrefix: string
+  keyPrefix: string,
+  highlightedDefinitionWords: Set<string> = new Set()
 ) => {
   const terms = buildDefinitionTerms(definitions);
   if (terms.length === 0) return [text];
@@ -263,22 +264,28 @@ const renderTextWithDefinitions = (
     const definitionEntry = termByLower.get(matchedTerm.toLowerCase());
 
     if (!definitionEntry) continue;
+    const definitionKey = definitionEntry.word.toLowerCase();
 
     if (termStart > lastIndex) {
       nodes.push(text.slice(lastIndex, termStart));
     }
 
-    nodes.push(
-      <span
-        key={`${keyPrefix}-definition-${termStart}`}
-        className="definition-term"
-        data-definition={definitionEntry.definition}
-        title={definitionEntry.definition}
-        tabIndex={0}
-      >
-        {matchedTerm}
-      </span>
-    );
+    if (highlightedDefinitionWords.has(definitionKey)) {
+      nodes.push(matchedTerm);
+    } else {
+      highlightedDefinitionWords.add(definitionKey);
+      nodes.push(
+        <span
+          key={`${keyPrefix}-definition-${termStart}`}
+          className="definition-term"
+          data-definition={definitionEntry.definition}
+          title={definitionEntry.definition}
+          tabIndex={0}
+        >
+          {matchedTerm}
+        </span>
+      );
+    }
     lastIndex = termEnd;
   }
 
@@ -292,6 +299,7 @@ const renderTextWithDefinitions = (
 const renderTextWithLinks = (text: string, definitions: ConceptDefinition[] = []) => {
   const nodes: React.ReactNode[] = [];
   const linkPattern = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+  const highlightedDefinitionWords = new Set<string>();
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -301,7 +309,8 @@ const renderTextWithLinks = (text: string, definitions: ConceptDefinition[] = []
         ...renderTextWithDefinitions(
           text.slice(lastIndex, match.index),
           definitions,
-          `content-${lastIndex}`
+          `content-${lastIndex}`,
+          highlightedDefinitionWords
         )
       );
     }
@@ -321,7 +330,12 @@ const renderTextWithLinks = (text: string, definitions: ConceptDefinition[] = []
 
   if (lastIndex < text.length) {
     nodes.push(
-      ...renderTextWithDefinitions(text.slice(lastIndex), definitions, `content-${lastIndex}`)
+      ...renderTextWithDefinitions(
+        text.slice(lastIndex),
+        definitions,
+        `content-${lastIndex}`,
+        highlightedDefinitionWords
+      )
     );
   }
 
@@ -2565,8 +2579,8 @@ function App() {
   };
   const simpleNextStoryConcepts = nextStoryConcepts.slice(0, INITIAL_NEXT_STORY_COUNT);
   const leapPoint = simpleTrianglePoint(90, g_radius * 2);
-  const simpleLeapLabelWidth = 120;
-  const simpleLeapLabelGap = 10;
+  const simpleLeapLabelWidth = 132;
+  const simpleLeapLabelGap = 4;
   const simpleLeapRightEdge = 640;
   const simpleLeapLineEnd = {
     x: Math.min(leapPoint.x, simpleLeapRightEdge - simpleLeapLabelWidth - simpleLeapLabelGap - 4),

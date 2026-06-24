@@ -1133,6 +1133,7 @@ body, html, #root {
   align-items: center;
   justify-content: space-between;
   gap: 0.35rem;
+  white-space: nowrap;
 }
 
 .simple-triangle-leap:disabled {
