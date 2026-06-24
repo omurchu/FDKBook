@@ -1084,10 +1084,11 @@ body, html, #root {
   border-radius: 4px;
   color: #222;
   cursor: pointer;
-  font-size: 0.78rem;
-  line-height: 1.15;
+  font-size: 0.9rem;
+  line-height: 1.2;
   text-align: left;
   white-space: normal;
+  user-select: none;
   -webkit-appearance: none;
   appearance: none;
   backface-visibility: hidden;
@@ -1099,6 +1100,13 @@ body, html, #root {
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
+  cursor: grab;
+  touch-action: none;
+}
+
+.simple-triangle-label-dragging,
+.simple-triangle-label-dragging .simple-triangle-choice {
+  cursor: grabbing;
 }
 
 .simple-triangle-media-icon {

@@ -167,6 +167,8 @@ const SAVED_MATRIX_NAME_KEY = "fdkSavedMatrixName";
 const PANE_WIDTHS_STORAGE_KEY = "fdkPaneWidths";
 const DEFAULT_PANE_WIDTHS = { left: 22, middle: 48, right: 30 };
 const MIN_PANE_WIDTHS = { left: 12, middle: 28, right: 20 };
+const SIMPLE_TRIANGLE_VIEWBOX_WIDTH = 664;
+const SIMPLE_TRIANGLE_VIEWBOX_HEIGHT = 500;
 
 const bufferToBase64 = (buffer: ArrayBuffer) => {
   let binary = "";
@@ -1745,6 +1747,9 @@ function App() {
   const [showRelatedConcepts, setShowRelatedConcepts] = useState<boolean>(false);
   const [showStrengthsAndAngles, setShowStrengthsAndAngles] = useState<boolean>(false);
   const [hoveredDialConceptId, setHoveredDialConceptId] = useState<number | null>(null);
+  const [simpleTriangleLabelOffsets, setSimpleTriangleLabelOffsets] = useState<
+    Record<string, { x: number; y: number }>
+  >({});
   const [paneWidths, setPaneWidths] = useState(() => {
     try {
       const saved = window.localStorage.getItem(PANE_WIDTHS_STORAGE_KEY);
@@ -1789,12 +1794,23 @@ function App() {
   const menuRef = useRef<HTMLDetailsElement | null>(null);
   const commentFormRef = useRef<HTMLFormElement | null>(null);
   const paneContainerRef = useRef<HTMLDivElement | null>(null);
+  const simpleTriangleSvgRef = useRef<SVGSVGElement | null>(null);
   const paneDragRef = useRef<{
     pair: "left-middle" | "middle-right";
     startX: number;
     containerWidth: number;
     startWidths: typeof DEFAULT_PANE_WIDTHS;
   } | null>(null);
+  const simpleTriangleLabelDragRef = useRef<{
+    key: string;
+    startClientX: number;
+    startClientY: number;
+    startOffset: { x: number; y: number };
+    scaleX: number;
+    scaleY: number;
+    moved: boolean;
+  } | null>(null);
+  const suppressSimpleTriangleClickRef = useRef<string | null>(null);
 
   const loadFromArrayBuffer = React.useCallback((buffer: ArrayBuffer, sourceLabel: string) => {
     const workbookData = readWorkbookData(buffer);
@@ -1934,6 +1950,23 @@ function App() {
 
   React.useEffect(() => {
     const handlePointerMove = (event: PointerEvent) => {
+      const labelDrag = simpleTriangleLabelDragRef.current;
+      if (labelDrag) {
+        const dx = event.clientX - labelDrag.startClientX;
+        const dy = event.clientY - labelDrag.startClientY;
+        if (Math.hypot(dx, dy) > 4) labelDrag.moved = true;
+
+        setSimpleTriangleLabelOffsets((previousOffsets) => ({
+          ...previousOffsets,
+          [labelDrag.key]: {
+            x: labelDrag.startOffset.x + dx * labelDrag.scaleX,
+            y: labelDrag.startOffset.y + dy * labelDrag.scaleY,
+          },
+        }));
+        event.preventDefault();
+        return;
+      }
+
       const drag = paneDragRef.current;
       if (!drag || drag.containerWidth <= 0) return;
 
@@ -1968,6 +2001,13 @@ function App() {
     };
 
     const handlePointerUp = () => {
+      const labelDrag = simpleTriangleLabelDragRef.current;
+      if (labelDrag?.moved) {
+        suppressSimpleTriangleClickRef.current = labelDrag.key;
+      }
+      simpleTriangleLabelDragRef.current = null;
+      document.body.classList.remove("simple-triangle-label-dragging");
+
       paneDragRef.current = null;
       document.body.classList.remove("pane-resizing");
     };
@@ -2526,7 +2566,91 @@ function App() {
   const simpleNextStoryConcepts = nextStoryConcepts.slice(0, INITIAL_NEXT_STORY_COUNT);
   const leapPoint = simpleTrianglePoint(90, g_radius * 2);
   const simpleLeapLabelWidth = 120;
-  const simpleLeapLabelX = Math.min(leapPoint.x + 10, 640 - simpleLeapLabelWidth - 4);
+  const simpleLeapLabelGap = 10;
+  const simpleLeapRightEdge = 640;
+  const simpleLeapLineEnd = {
+    x: Math.min(leapPoint.x, simpleLeapRightEdge - simpleLeapLabelWidth - simpleLeapLabelGap - 4),
+    y: leapPoint.y,
+  };
+  const simpleLeapLabelX = simpleLeapLineEnd.x + simpleLeapLabelGap;
+  const simpleChoiceLabelWidth = 190;
+  const simpleChoiceLabelHeight = 68;
+  const simpleChoiceLabelMinX = -20;
+  const simpleChoiceLabelMaxX = 640 - simpleChoiceLabelWidth - 4;
+  const simpleChoiceLabelMaxY = 352;
+  const clampSimpleChoiceX = (x: number) =>
+    Math.min(simpleChoiceLabelMaxX, Math.max(simpleChoiceLabelMinX, x));
+  const clampSimpleChoiceY = (y: number) =>
+    Math.min(simpleChoiceLabelMaxY, Math.max(-48, y));
+  const simpleChoiceLabelLayouts = simpleNextStoryConcepts.map((rel, idx) => {
+    const point = simpleTrianglePoint(rel.angle, g_radius);
+    const key = selectedConcept
+      ? `${selectedConcept.id}:${rel.concept.id}`
+      : `unknown:${rel.concept.id}`;
+    const manualOffset = simpleTriangleLabelOffsets[key];
+    const closeAngles =
+      simpleNextStoryConcepts.length > 1 &&
+      Math.abs(simpleNextStoryConcepts[0].angle - simpleNextStoryConcepts[1].angle) < 20;
+    const bothAtExtremeEdge =
+      closeAngles &&
+      simpleNextStoryConcepts.every((item) => item.angle < 20 || item.angle > 170);
+    const baseLabelX = point.x + 10;
+    const baseLabelY = point.y - simpleChoiceLabelHeight / 2;
+    const xNudge = bothAtExtremeEdge && idx === 1 ? 168 : 0;
+    const yNudge = bothAtExtremeEdge ? -18 : 0;
+
+    return {
+      key,
+      point,
+      x: clampSimpleChoiceX(baseLabelX + xNudge + (manualOffset?.x ?? 0)),
+      y: clampSimpleChoiceY(baseLabelY + yNudge + (manualOffset?.y ?? 0)),
+      bothAtExtremeEdge,
+      hasManualOffset: Boolean(manualOffset),
+    };
+  });
+
+  if (
+    simpleChoiceLabelLayouts.length === 2 &&
+    !simpleChoiceLabelLayouts.some((layout) => layout.bothAtExtremeEdge || layout.hasManualOffset)
+  ) {
+    const [firstLayout, secondLayout] = simpleChoiceLabelLayouts;
+    const collisionSeparationMultiplier = 1.3;
+    const horizontalOverlap =
+      firstLayout.x < secondLayout.x + simpleChoiceLabelWidth &&
+      firstLayout.x + simpleChoiceLabelWidth > secondLayout.x;
+    const verticalOverlap =
+      firstLayout.y < secondLayout.y + simpleChoiceLabelHeight + 10 &&
+      firstLayout.y + simpleChoiceLabelHeight + 10 > secondLayout.y;
+
+    if (horizontalOverlap && verticalOverlap) {
+      const [upperIndex, lowerIndex] =
+        firstLayout.y <= secondLayout.y ? [0, 1] : [1, 0];
+      const upper = simpleChoiceLabelLayouts[upperIndex];
+      const lower = simpleChoiceLabelLayouts[lowerIndex];
+      const neededGap = (simpleChoiceLabelHeight + 14) * collisionSeparationMultiplier;
+      const currentGap = lower.y - upper.y;
+      const extraGap = Math.max(0, neededGap - currentGap);
+      const [leftIndex, rightIndex] =
+        firstLayout.x <= secondLayout.x ? [0, 1] : [1, 0];
+      const left = simpleChoiceLabelLayouts[leftIndex];
+      const right = simpleChoiceLabelLayouts[rightIndex];
+      const overlapAmount =
+        Math.min(
+          firstLayout.x + simpleChoiceLabelWidth,
+          secondLayout.x + simpleChoiceLabelWidth
+        ) - Math.max(firstLayout.x, secondLayout.x);
+      const horizontalPush = Math.max(0, overlapAmount * (collisionSeparationMultiplier - 1));
+
+      upper.y = clampSimpleChoiceY(upper.y - extraGap / 2);
+      lower.y = clampSimpleChoiceY(lower.y + extraGap / 2);
+      left.x = clampSimpleChoiceX(left.x - horizontalPush / 2);
+      right.x = clampSimpleChoiceX(right.x + horizontalPush / 2);
+
+      simpleChoiceLabelLayouts.forEach((layout) => {
+        layout.x = Math.max(layout.x, Math.min(layout.point.x + 10, simpleChoiceLabelMaxX));
+      });
+    }
+  }
   const displayedHistory = history
     .map((entry, index) => ({ ...entry, index }))
     .reverse();
@@ -2567,6 +2691,25 @@ function App() {
     };
     event.currentTarget.setPointerCapture(event.pointerId);
     document.body.classList.add("pane-resizing");
+  };
+  const startSimpleTriangleLabelDrag = (
+    key: string,
+    event: React.PointerEvent<HTMLButtonElement>
+  ) => {
+    const svgRect = simpleTriangleSvgRef.current?.getBoundingClientRect();
+    if (!svgRect || svgRect.width <= 0 || svgRect.height <= 0) return;
+
+    simpleTriangleLabelDragRef.current = {
+      key,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startOffset: simpleTriangleLabelOffsets[key] ?? { x: 0, y: 0 },
+      scaleX: SIMPLE_TRIANGLE_VIEWBOX_WIDTH / svgRect.width,
+      scaleY: SIMPLE_TRIANGLE_VIEWBOX_HEIGHT / svgRect.height,
+      moved: false,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    document.body.classList.add("simple-triangle-label-dragging");
   };
 
   return (
@@ -3325,6 +3468,7 @@ function App() {
             {simpleTriangleOnly ? (
               <div className="simple-triangle-container">
                 <svg
+                  ref={simpleTriangleSvgRef}
                   className="simple-triangle-svg"
                   width="720"
                   height="420"
@@ -3366,21 +3510,7 @@ function App() {
                   />
 
                   {simpleNextStoryConcepts.map((rel, idx) => {
-                    const point = simpleTrianglePoint(rel.angle, g_radius);
-                    const labelPoint = simpleTrianglePoint(rel.angle, g_radius + 34);
-                    const closeAngles =
-                      simpleNextStoryConcepts.length > 1 &&
-                      Math.abs(simpleNextStoryConcepts[0].angle - simpleNextStoryConcepts[1].angle) < 20;
-                    const bothAtExtremeEdge =
-                      closeAngles &&
-                      simpleNextStoryConcepts.every(
-                        (item) => item.angle < 20 || item.angle > 170
-                      );
-                    const xNudge = bothAtExtremeEdge && idx === 1 ? 168 : 10 + (idx === 0 ? 0 : 16);
-                    const yNudge = bothAtExtremeEdge
-                      ? -18
-                      : (idx === 0 ? -28 : 22) + (closeAngles && idx === 1 ? 18 : 0);
-                    const labelY = Math.min(360, Math.max(-48, labelPoint.y + yNudge));
+                    const labelLayout = simpleChoiceLabelLayouts[idx];
 
                     return (
                       <g key={`simple-next-story-${rel.concept.id}`}>
@@ -3388,27 +3518,38 @@ function App() {
                           className="simple-triangle-next-line"
                           x1={simpleTriangleOrigin.x}
                           y1={simpleTriangleOrigin.y}
-                          x2={point.x}
-                          y2={point.y}
+                          x2={labelLayout.point.x}
+                          y2={labelLayout.point.y}
                         />
                         <circle
                           className="simple-triangle-endpoint"
-                          cx={point.x}
-                          cy={point.y}
+                          cx={labelLayout.point.x}
+                          cy={labelLayout.point.y}
                           r="5"
                         />
                         <foreignObject
-                          x={labelPoint.x + xNudge}
-                          y={labelY}
-                          width="170"
-                          height="58"
+                          x={labelLayout.x}
+                          y={labelLayout.y}
+                          width={simpleChoiceLabelWidth}
+                          height={simpleChoiceLabelHeight}
                         >
                           <button
                             className="simple-triangle-choice"
                             style={{ backgroundColor: getRelationColor(rel.angle) }}
-                            onClick={() =>
-                              handleSelectConcept(rel.concept, `j_NextinStory_${nextStoryOffset + idx + 1}`)
+                            onPointerDown={(event) =>
+                              startSimpleTriangleLabelDrag(labelLayout.key, event)
                             }
+                            onClick={() => {
+                              if (suppressSimpleTriangleClickRef.current === labelLayout.key) {
+                                suppressSimpleTriangleClickRef.current = null;
+                                return;
+                              }
+
+                              handleSelectConcept(
+                                rel.concept,
+                                `j_NextinStory_${nextStoryOffset + idx + 1}`
+                              );
+                            }}
                           >
                             {rel.concept.video && (
                               <span className="simple-triangle-media-icon" aria-label="Has video" title="Video">
@@ -3431,13 +3572,13 @@ function App() {
                     className="simple-triangle-leap-line"
                     x1={simpleTriangleOrigin.x}
                     y1={simpleTriangleOrigin.y}
-                    x2={leapPoint.x}
-                    y2={leapPoint.y}
+                    x2={simpleLeapLineEnd.x}
+                    y2={simpleLeapLineEnd.y}
                     markerEnd="url(#simple-triangle-leap-arrow)"
                   />
                   <foreignObject
                     x={simpleLeapLabelX}
-                    y={leapPoint.y - 18}
+                    y={simpleLeapLineEnd.y - 18}
                     width={simpleLeapLabelWidth}
                     height="42"
                   >
