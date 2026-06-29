@@ -40,6 +40,14 @@ type WorkbookData = {
 
 type ActiveTab = "home" | "graph";
 type PathMode = "hide" | "simple" | "detailed";
+type LinksSummaryReportTab =
+  | "table"
+  | "histogram"
+  | "trends"
+  | "valleyTrends"
+  | "valleyConnections";
+type LinksSummaryDirection = "outgoing" | "incoming";
+type LinksConnectionDirection = LinksSummaryDirection | "all";
 
 type HistoryEntry = {
   id: number;
@@ -73,10 +81,44 @@ type MatrixQaIssue = {
 type LinksSummaryRow = {
   id: number;
   title: string;
+  valley: string;
+  rowIndex: number;
   outgoingLinkCount: number;
   incomingLinkCount: number;
+  outgoingAvgStrength: number;
+  incomingAvgStrength: number;
   outMaxStrength: number;
   inMaxStrength: number;
+};
+
+type LinksHistogramBin = {
+  linkCount: number;
+  total: number;
+  valleyCounts: Map<string, number>;
+};
+
+type ValleyTrendRow = {
+  rowIndex: number;
+  rowValley: string;
+  total: number;
+  valleyCounts: Map<string, number>;
+};
+
+type ValleyConnectionNode = {
+  concept: Concept;
+  index: number;
+  valley: string;
+  angle: number;
+  x: number;
+  y: number;
+};
+
+type ValleyConnectionLink = {
+  source: ValleyConnectionNode;
+  target: ValleyConnectionNode;
+  strength: number;
+  direction: LinksSummaryDirection;
+  isIntraValley: boolean;
 };
 
 type MatrixQaReport = {
@@ -131,6 +173,20 @@ const splitIntoTwoLines = (text: string) => {
   return [words.slice(0, bestIndex).join(" "), words.slice(bestIndex).join(" ")];
 };
 
+const lightenHexColor = (color: string, amount = 0.62) => {
+  const hex = color.trim().replace("#", "");
+  if (!/^[0-9a-fA-F]{6}$/.test(hex)) return color;
+
+  const channels = [0, 2, 4].map((start) => parseInt(hex.slice(start, start + 2), 16));
+  const lightened = channels.map((channel) =>
+    Math.round(channel + (255 - channel) * amount)
+      .toString(16)
+      .padStart(2, "0")
+  );
+
+  return `#${lightened.join("")}`;
+};
+
 const INITIAL_NEXT_STORY_COUNT = 2;
 const MAX_OTHER_SUGGESTION_CLICKS = 2;
 const INITIAL_HISTORY_CHOICE = "j_Start";
@@ -169,6 +225,19 @@ const DEFAULT_PANE_WIDTHS = { left: 22, middle: 48, right: 30 };
 const MIN_PANE_WIDTHS = { left: 12, middle: 28, right: 20 };
 const SIMPLE_TRIANGLE_VIEWBOX_WIDTH = 664;
 const SIMPLE_TRIANGLE_VIEWBOX_HEIGHT = 500;
+const LINKS_HISTOGRAM_WIDTH = 820;
+const LINKS_HISTOGRAM_HEIGHT = 360;
+const LINKS_HISTOGRAM_MARGIN = { top: 18, right: 18, bottom: 44, left: 54 };
+const LINKS_HISTOGRAM_X_TICK_INTERVAL = 10;
+const LINKS_TRENDS_WIDTH = 900;
+const LINKS_TRENDS_HEIGHT = 420;
+const LINKS_TRENDS_MARGIN = { top: 24, right: 64, bottom: 48, left: 56 };
+const LINKS_TRENDS_X_TICK_INTERVAL = 10;
+const VALLEY_CONNECTIONS_WIDTH = 900;
+const VALLEY_CONNECTIONS_HEIGHT = 680;
+const VALLEY_CONNECTIONS_CENTER_X = VALLEY_CONNECTIONS_WIDTH / 2;
+const VALLEY_CONNECTIONS_CENTER_Y = 335;
+const VALLEY_CONNECTIONS_RADIUS = 260;
 
 const bufferToBase64 = (buffer: ArrayBuffer) => {
   let binary = "";
@@ -1788,6 +1857,19 @@ function App() {
   const [mediaReportCopied, setMediaReportCopied] = useState<boolean>(false);
   const [showLinksSummaryReport, setShowLinksSummaryReport] = useState<boolean>(false);
   const [linksSummaryRows, setLinksSummaryRows] = useState<LinksSummaryRow[]>([]);
+  const [linksSummaryReportTab, setLinksSummaryReportTab] =
+    useState<LinksSummaryReportTab>("table");
+  const [linksSummaryDirection, setLinksSummaryDirection] =
+    useState<LinksSummaryDirection>("outgoing");
+  const [valleyTrendsDirection, setValleyTrendsDirection] =
+    useState<LinksSummaryDirection>("outgoing");
+  const [valleyConnectionsDirection, setValleyConnectionsDirection] =
+    useState<LinksConnectionDirection>("outgoing");
+  const [linksSummaryValleyFilter, setLinksSummaryValleyFilter] = useState<string>("All");
+  const [valleyConnectionsValleyFilter, setValleyConnectionsValleyFilter] =
+    useState<string>("All");
+  const [showIntraValleyConnections, setShowIntraValleyConnections] = useState<boolean>(false);
+  const [linksSummaryMinStrength, setLinksSummaryMinStrength] = useState<number>(1);
   const [showMatrixQaReport, setShowMatrixQaReport] = useState<boolean>(false);
   const [matrixQaReport, setMatrixQaReport] = useState<MatrixQaReport | null>(null);
   const [feedbackComment, setFeedbackComment] = useState<string>("");
@@ -2190,27 +2272,29 @@ function App() {
     window.setTimeout(() => setMediaReportCopied(false), 1800);
   };
 
-  const buildLinksSummaryRows = (): LinksSummaryRow[] =>
+  const buildLinksSummaryRows = (minimumStrength: number): LinksSummaryRow[] =>
     concepts.map((concept, conceptIndex) => {
       let outgoingLinkCount = 0;
       let incomingLinkCount = 0;
       let outMaxStrength = 0;
       let inMaxStrength = 0;
+      let outgoingStrengthTotal = 0;
+      let incomingStrengthTotal = 0;
 
       concepts.forEach((_, targetIndex) => {
         const strength = strengthMatrix[conceptIndex]?.[targetIndex] ?? 0;
-        const angle = angleMatrix[conceptIndex]?.[targetIndex] ?? 0;
-        if (strength > 0 || angle > 0) {
+        if (strength >= minimumStrength) {
           outgoingLinkCount++;
+          outgoingStrengthTotal += strength;
           outMaxStrength = Math.max(outMaxStrength, strength);
         }
       });
 
       concepts.forEach((_, sourceIndex) => {
         const strength = strengthMatrix[sourceIndex]?.[conceptIndex] ?? 0;
-        const angle = angleMatrix[sourceIndex]?.[conceptIndex] ?? 0;
-        if (strength > 0 || angle > 0) {
+        if (strength >= minimumStrength) {
           incomingLinkCount++;
+          incomingStrengthTotal += strength;
           inMaxStrength = Math.max(inMaxStrength, strength);
         }
       });
@@ -2218,15 +2302,310 @@ function App() {
       return {
         id: concept.id,
         title: concept.title,
+        valley: String(concept.valley ?? "").trim(),
+        rowIndex: conceptIndex + 1,
         outgoingLinkCount,
         incomingLinkCount,
+        outgoingAvgStrength: outgoingLinkCount > 0 ? outgoingStrengthTotal / outgoingLinkCount : 0,
+        incomingAvgStrength: incomingLinkCount > 0 ? incomingStrengthTotal / incomingLinkCount : 0,
         outMaxStrength,
         inMaxStrength,
       };
     });
 
+  const linksSummaryValleys = React.useMemo(
+    () =>
+      Array.from(
+        new Set(
+          linksSummaryRows
+            .map((row) => row.valley)
+            .filter(Boolean)
+        )
+      ).sort((a, b) => a.localeCompare(b)),
+    [linksSummaryRows]
+  );
+
+  const linksSummaryValleyColorByName = React.useMemo(
+    () =>
+      new Map(
+        linksSummaryValleys.map((valley, index) => [
+          valley,
+          VALLEY_COLORS[index % VALLEY_COLORS.length],
+        ])
+      ),
+    [linksSummaryValleys]
+  );
+
+  const filteredLinksSummaryRows = React.useMemo(
+    () =>
+      linksSummaryRows.filter(
+        (row) => linksSummaryValleyFilter === "All" || row.valley === linksSummaryValleyFilter
+      ),
+    [linksSummaryRows, linksSummaryValleyFilter]
+  );
+
+  const linksHistogramBins = React.useMemo<LinksHistogramBin[]>(() => {
+    const binsByLinkCount = new Map<number, LinksHistogramBin>();
+
+    filteredLinksSummaryRows.forEach((row) => {
+      const linkCount =
+        linksSummaryDirection === "outgoing" ? row.outgoingLinkCount : row.incomingLinkCount;
+      const valley = row.valley || "No Valley";
+      const bin =
+        binsByLinkCount.get(linkCount) ??
+        {
+          linkCount,
+          total: 0,
+          valleyCounts: new Map<string, number>(),
+        };
+
+      bin.total++;
+      bin.valleyCounts.set(valley, (bin.valleyCounts.get(valley) ?? 0) + 1);
+      binsByLinkCount.set(linkCount, bin);
+    });
+
+    return Array.from(binsByLinkCount.values()).sort((a, b) => a.linkCount - b.linkCount);
+  }, [filteredLinksSummaryRows, linksSummaryDirection]);
+
+  const linksHistogramMaxTotal = Math.max(
+    1,
+    ...linksHistogramBins.map((bin) => bin.total)
+  );
+  const linksHistogramMaxLinkCount = Math.max(
+    LINKS_HISTOGRAM_X_TICK_INTERVAL,
+    ...linksHistogramBins.map((bin) => bin.linkCount)
+  );
+  const linksHistogramXMax =
+    Math.ceil(linksHistogramMaxLinkCount / LINKS_HISTOGRAM_X_TICK_INTERVAL) *
+    LINKS_HISTOGRAM_X_TICK_INTERVAL;
+  const linksHistogramXTicks = Array.from(
+    { length: linksHistogramXMax / LINKS_HISTOGRAM_X_TICK_INTERVAL + 1 },
+    (_, index) => index * LINKS_HISTOGRAM_X_TICK_INTERVAL
+  );
+  const linksHistogramHasNoValley = linksHistogramBins.some((bin) =>
+    bin.valleyCounts.has("No Valley")
+  );
+  const linksHistogramValleyKeys =
+    linksSummaryValleyFilter === "All"
+      ? [...linksSummaryValleys, ...(linksHistogramHasNoValley ? ["No Valley"] : [])]
+      : [linksSummaryValleyFilter];
+  const getLinksHistogramBarColor = (valley: string) =>
+    linksSummaryValleyColorByName.get(valley) ?? "#b8bec7";
+  const linksTrendsMaxRowIndex = Math.max(
+    LINKS_TRENDS_X_TICK_INTERVAL,
+    linksSummaryRows.length
+  );
+  const linksTrendsXMax =
+    Math.ceil(linksTrendsMaxRowIndex / LINKS_TRENDS_X_TICK_INTERVAL) *
+    LINKS_TRENDS_X_TICK_INTERVAL;
+  const linksTrendsXTicks = Array.from(
+    { length: linksTrendsXMax / LINKS_TRENDS_X_TICK_INTERVAL + 1 },
+    (_, index) => index * LINKS_TRENDS_X_TICK_INTERVAL
+  );
+  const linksTrendsMaxCount = Math.max(
+    LINKS_HISTOGRAM_X_TICK_INTERVAL,
+    ...linksSummaryRows.map((row) =>
+      Math.max(row.outgoingLinkCount, row.incomingLinkCount)
+    )
+  );
+  const linksTrendsRightAxisMax =
+    Math.ceil(linksTrendsMaxCount / LINKS_HISTOGRAM_X_TICK_INTERVAL) *
+    LINKS_HISTOGRAM_X_TICK_INTERVAL;
+  const linksTrendsPlotWidth =
+    LINKS_TRENDS_WIDTH - LINKS_TRENDS_MARGIN.left - LINKS_TRENDS_MARGIN.right;
+  const linksTrendsPlotHeight =
+    LINKS_TRENDS_HEIGHT - LINKS_TRENDS_MARGIN.top - LINKS_TRENDS_MARGIN.bottom;
+  const getLinksTrendsX = (rowIndex: number) =>
+    LINKS_TRENDS_MARGIN.left + (rowIndex / linksTrendsXMax) * linksTrendsPlotWidth;
+  const getLinksTrendsStrengthY = (strength: number) =>
+    LINKS_TRENDS_HEIGHT -
+    LINKS_TRENDS_MARGIN.bottom -
+    (Math.min(Math.max(strength, 0), 5) / 5) * linksTrendsPlotHeight;
+  const getLinksTrendsCountY = (count: number) =>
+    LINKS_TRENDS_HEIGHT -
+    LINKS_TRENDS_MARGIN.bottom -
+    (Math.min(Math.max(count, 0), linksTrendsRightAxisMax) / linksTrendsRightAxisMax) *
+      linksTrendsPlotHeight;
+  const buildLinksTrendsPath = (
+    getYValue: (row: LinksSummaryRow) => number,
+    scaleY: (value: number) => number
+  ) =>
+    linksSummaryRows
+      .map((row, index) => {
+        const command = index === 0 ? "M" : "L";
+        return `${command} ${getLinksTrendsX(row.rowIndex).toFixed(2)} ${scaleY(
+          getYValue(row)
+        ).toFixed(2)}`;
+      })
+      .join(" ");
+  const linksTrendsOutgoingStrengthPath = buildLinksTrendsPath(
+    (row) => row.outgoingAvgStrength,
+    getLinksTrendsStrengthY
+  );
+  const linksTrendsIncomingStrengthPath = buildLinksTrendsPath(
+    (row) => row.incomingAvgStrength,
+    getLinksTrendsStrengthY
+  );
+  const linksTrendsOutgoingCountPath = buildLinksTrendsPath(
+    (row) => row.outgoingLinkCount,
+    getLinksTrendsCountY
+  );
+  const linksTrendsIncomingCountPath = buildLinksTrendsPath(
+    (row) => row.incomingLinkCount,
+    getLinksTrendsCountY
+  );
+  const valleyTrendRows = React.useMemo<ValleyTrendRow[]>(
+    () =>
+      concepts.map((concept, conceptIndex) => {
+        const valleyCounts = new Map<string, number>();
+
+        concepts.forEach((relatedConcept, relatedIndex) => {
+          const strength =
+            valleyTrendsDirection === "outgoing"
+              ? strengthMatrix[conceptIndex]?.[relatedIndex] ?? 0
+              : strengthMatrix[relatedIndex]?.[conceptIndex] ?? 0;
+
+          if (strength >= linksSummaryMinStrength) {
+            const valley = String(relatedConcept.valley ?? "").trim() || "No Valley";
+            valleyCounts.set(valley, (valleyCounts.get(valley) ?? 0) + 1);
+          }
+        });
+
+        return {
+          rowIndex: conceptIndex + 1,
+          rowValley: String(concept.valley ?? "").trim() || "No Valley",
+          total: Array.from(valleyCounts.values()).reduce((sum, count) => sum + count, 0),
+          valleyCounts,
+        };
+      }),
+    [concepts, strengthMatrix, valleyTrendsDirection, linksSummaryMinStrength]
+  );
+  const valleyTrendHasNoValley = valleyTrendRows.some((row) =>
+    row.valleyCounts.has("No Valley")
+  );
+  const valleyTrendKeys = [
+    ...linksSummaryValleys,
+    ...(valleyTrendHasNoValley ? ["No Valley"] : []),
+  ];
+  const valleyTrendMaxCount = Math.max(
+    LINKS_HISTOGRAM_X_TICK_INTERVAL,
+    ...valleyTrendRows.map((row) => row.total)
+  );
+  const valleyTrendYAxisMax =
+    Math.ceil(valleyTrendMaxCount / LINKS_HISTOGRAM_X_TICK_INTERVAL) *
+    LINKS_HISTOGRAM_X_TICK_INTERVAL;
+  const getValleyTrendY = (count: number) =>
+    LINKS_TRENDS_HEIGHT -
+    LINKS_TRENDS_MARGIN.bottom -
+    (Math.min(Math.max(count, 0), valleyTrendYAxisMax) / valleyTrendYAxisMax) *
+      linksTrendsPlotHeight;
+  const getRowValleyY = (value: number) =>
+    LINKS_TRENDS_HEIGHT -
+    LINKS_TRENDS_MARGIN.bottom -
+    Math.min(Math.max(value, 0), 1) * linksTrendsPlotHeight;
+  const getRowValleyBarColor = (valley: string) =>
+    lightenHexColor(getLinksHistogramBarColor(valley));
+  const valleyConnectionNodes = React.useMemo<ValleyConnectionNode[]>(() => {
+    const valleyOrder = [
+      ...linksSummaryValleys,
+      ...(concepts.some((concept) => !String(concept.valley ?? "").trim()) ? ["No Valley"] : []),
+    ];
+    const orderedConcepts = concepts
+      .map((concept, index) => ({
+        concept,
+        index,
+        valley: String(concept.valley ?? "").trim() || "No Valley",
+      }))
+      .sort((a, b) => {
+        const valleyCompare = valleyOrder.indexOf(a.valley) - valleyOrder.indexOf(b.valley);
+        if (valleyCompare !== 0) return valleyCompare;
+        return a.index - b.index;
+      });
+    const total = Math.max(orderedConcepts.length, 1);
+
+    return orderedConcepts.map((item, orderedIndex) => {
+      const angle = -Math.PI / 2 + (Math.PI * 2 * orderedIndex) / total;
+
+      return {
+        ...item,
+        angle,
+        x: VALLEY_CONNECTIONS_CENTER_X + Math.cos(angle) * VALLEY_CONNECTIONS_RADIUS,
+        y: VALLEY_CONNECTIONS_CENTER_Y + Math.sin(angle) * VALLEY_CONNECTIONS_RADIUS,
+      };
+    });
+  }, [concepts, linksSummaryValleys]);
+  const valleyConnectionNodesByIndex = React.useMemo(
+    () => new Map(valleyConnectionNodes.map((node) => [node.index, node])),
+    [valleyConnectionNodes]
+  );
+  const valleyConnectionLinks = React.useMemo<ValleyConnectionLink[]>(() => {
+    const links: ValleyConnectionLink[] = [];
+
+    concepts.forEach((_, sourceIndex) => {
+      concepts.forEach((__, targetIndex) => {
+        if (sourceIndex === targetIndex) return;
+        const source = valleyConnectionNodesByIndex.get(sourceIndex);
+        const target = valleyConnectionNodesByIndex.get(targetIndex);
+        if (!source || !target) return;
+        const isIntraValley = source.valley === target.valley;
+        if (isIntraValley && !showIntraValleyConnections) return;
+        if (
+          valleyConnectionsValleyFilter !== "All" &&
+          source.valley !== valleyConnectionsValleyFilter
+        ) {
+          return;
+        }
+
+        const strength =
+          valleyConnectionsDirection === "incoming"
+            ? strengthMatrix[targetIndex]?.[sourceIndex] ?? 0
+            : strengthMatrix[sourceIndex]?.[targetIndex] ?? 0;
+
+        if (strength >= linksSummaryMinStrength) {
+          links.push(
+            valleyConnectionsDirection === "incoming"
+              ? { source: target, target: source, strength, direction: "incoming", isIntraValley }
+              : { source, target, strength, direction: "outgoing", isIntraValley }
+          );
+        }
+      });
+    });
+
+    return links;
+  }, [
+    concepts,
+    strengthMatrix,
+    valleyConnectionNodesByIndex,
+    valleyConnectionsDirection,
+    valleyConnectionsValleyFilter,
+    showIntraValleyConnections,
+    linksSummaryMinStrength,
+  ]);
+
+  const handleLinksSummaryMinStrengthChange = (minimumStrength: number) => {
+    setLinksSummaryMinStrength(minimumStrength);
+    setLinksSummaryRows(buildLinksSummaryRows(minimumStrength));
+  };
+
+  const handleShowValleyConnectionsTab = () => {
+    setLinksSummaryReportTab("valleyConnections");
+    setValleyConnectionsDirection("outgoing");
+    setValleyConnectionsValleyFilter("All");
+    setShowIntraValleyConnections(false);
+    setLinksSummaryMinStrength(5);
+    setLinksSummaryRows(buildLinksSummaryRows(5));
+  };
+
   const handleShowLinksSummaryReport = () => {
-    setLinksSummaryRows(buildLinksSummaryRows());
+    setLinksSummaryRows(buildLinksSummaryRows(1));
+    setLinksSummaryReportTab("table");
+    setLinksSummaryDirection("outgoing");
+    setValleyTrendsDirection("outgoing");
+    setValleyConnectionsDirection("outgoing");
+    setValleyConnectionsValleyFilter("All");
+    setShowIntraValleyConnections(false);
+    setLinksSummaryValleyFilter("All");
+    setLinksSummaryMinStrength(1);
     setShowLinksSummaryReport(true);
     setIsMenuOpen(false);
   };
@@ -2902,7 +3281,7 @@ function App() {
               onClick={handleShowLinksSummaryReport}
               disabled={concepts.length === 0}
             >
-              Links Summary Report
+              Links Strength Report
             </button>
             <button
               className="menu-item-button"
@@ -3066,46 +3445,877 @@ function App() {
           className="links-summary-dialog"
           role="dialog"
           aria-modal="true"
-          aria-label="Links summary report"
+          aria-label="Links strength report"
         >
           <button
             className="search-close"
             onClick={() => setShowLinksSummaryReport(false)}
-            aria-label="Close links summary report"
+            aria-label="Close links strength report"
           >
             x
           </button>
-          <h3>Links Summary Report</h3>
+          <h3>Links Strength Report</h3>
           <p className="links-summary-summary">
             {linksSummaryRows.length} concepts · based on the currently active matrix
           </p>
 
-          <div className="links-summary-table-wrap">
-            <table className="links-summary-table">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Title</th>
-                  <th>Outgoing_Links</th>
-                  <th>Incoming_Links</th>
-                  <th>Out_Max_Strength</th>
-                  <th>In_Max_Strength</th>
-                </tr>
-              </thead>
-              <tbody>
-                {linksSummaryRows.map((row, index) => (
-                  <tr key={`links-summary-${row.id}-${index}`}>
-                    <td>{row.id}</td>
-                    <td>{row.title}</td>
-                    <td>{row.outgoingLinkCount}</td>
-                    <td>{row.incomingLinkCount}</td>
-                    <td>{row.outMaxStrength}</td>
-                    <td>{row.inMaxStrength}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="links-summary-tabs" role="tablist" aria-label="Links summary views">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={linksSummaryReportTab === "table"}
+              className={linksSummaryReportTab === "table" ? "active" : ""}
+              onClick={() => setLinksSummaryReportTab("table")}
+            >
+              Table
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={linksSummaryReportTab === "histogram"}
+              className={linksSummaryReportTab === "histogram" ? "active" : ""}
+              onClick={() => setLinksSummaryReportTab("histogram")}
+            >
+              Histogram
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={linksSummaryReportTab === "trends"}
+              className={linksSummaryReportTab === "trends" ? "active" : ""}
+              onClick={() => setLinksSummaryReportTab("trends")}
+            >
+              Trends
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={linksSummaryReportTab === "valleyTrends"}
+              className={linksSummaryReportTab === "valleyTrends" ? "active" : ""}
+              onClick={() => setLinksSummaryReportTab("valleyTrends")}
+            >
+              Valley Trends
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={linksSummaryReportTab === "valleyConnections"}
+              className={linksSummaryReportTab === "valleyConnections" ? "active" : ""}
+              onClick={handleShowValleyConnectionsTab}
+            >
+              Valley Connections
+            </button>
           </div>
+
+          {linksSummaryReportTab === "table" ? (
+            <div className="links-summary-table-wrap" role="tabpanel" aria-label="Links table">
+              <table className="links-summary-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Title</th>
+                    <th>Outgoing_Links</th>
+                    <th>Incoming_Links</th>
+                    <th>Out_Max_Strength</th>
+                    <th>In_Max_Strength</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {linksSummaryRows.map((row, index) => (
+                    <tr key={`links-summary-${row.id}-${index}`}>
+                      <td>{row.id}</td>
+                      <td>{row.title}</td>
+                      <td>{row.outgoingLinkCount}</td>
+                      <td>{row.incomingLinkCount}</td>
+                      <td>{row.outMaxStrength}</td>
+                      <td>{row.inMaxStrength}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : linksSummaryReportTab === "histogram" ? (
+            <div className="links-summary-histogram" role="tabpanel" aria-label="Links histogram">
+              <div className="links-summary-controls">
+                <label>
+                  <span>Direction</span>
+                  <select
+                    value={linksSummaryDirection}
+                    onChange={(event) =>
+                      setLinksSummaryDirection(event.target.value as LinksSummaryDirection)
+                    }
+                  >
+                    <option value="outgoing">Outgoing</option>
+                    <option value="incoming">Incoming</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Valley</span>
+                  <select
+                    value={linksSummaryValleyFilter}
+                    onChange={(event) => setLinksSummaryValleyFilter(event.target.value)}
+                  >
+                    <option value="All">All</option>
+                    {linksSummaryValleys.map((valley) => (
+                      <option key={valley} value={valley}>
+                        {valley}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Min Strength</span>
+                  <select
+                    value={linksSummaryMinStrength}
+                    onChange={(event) =>
+                      handleLinksSummaryMinStrengthChange(Number(event.target.value))
+                    }
+                  >
+                    {[1, 2, 3, 4, 5].map((strength) => (
+                      <option key={strength} value={strength}>
+                        {strength}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              {linksHistogramBins.length === 0 ? (
+                <p className="search-empty">No concepts match the selected filter.</p>
+              ) : (
+                <>
+                  <div className="links-summary-chart-wrap">
+                    <svg
+                      className="links-summary-chart"
+                      viewBox={`0 0 ${LINKS_HISTOGRAM_WIDTH} ${LINKS_HISTOGRAM_HEIGHT}`}
+                      role="img"
+                      aria-label={`Histogram of ${linksSummaryDirection} link counts`}
+                    >
+                      <line
+                        className="links-summary-axis"
+                        x1={LINKS_HISTOGRAM_MARGIN.left}
+                        y1={LINKS_HISTOGRAM_HEIGHT - LINKS_HISTOGRAM_MARGIN.bottom}
+                        x2={LINKS_HISTOGRAM_WIDTH - LINKS_HISTOGRAM_MARGIN.right}
+                        y2={LINKS_HISTOGRAM_HEIGHT - LINKS_HISTOGRAM_MARGIN.bottom}
+                      />
+                      <line
+                        className="links-summary-axis"
+                        x1={LINKS_HISTOGRAM_MARGIN.left}
+                        y1={LINKS_HISTOGRAM_MARGIN.top}
+                        x2={LINKS_HISTOGRAM_MARGIN.left}
+                        y2={LINKS_HISTOGRAM_HEIGHT - LINKS_HISTOGRAM_MARGIN.bottom}
+                      />
+                      {[0, 0.25, 0.5, 0.75, 1].map((tick) => {
+                        const y =
+                          LINKS_HISTOGRAM_HEIGHT -
+                          LINKS_HISTOGRAM_MARGIN.bottom -
+                          tick *
+                            (LINKS_HISTOGRAM_HEIGHT -
+                              LINKS_HISTOGRAM_MARGIN.top -
+                              LINKS_HISTOGRAM_MARGIN.bottom);
+                        const value = Math.round(linksHistogramMaxTotal * tick);
+
+                        return (
+                          <g key={`links-histogram-y-${tick}`}>
+                            <line
+                              className="links-summary-grid"
+                              x1={LINKS_HISTOGRAM_MARGIN.left}
+                              y1={y}
+                              x2={LINKS_HISTOGRAM_WIDTH - LINKS_HISTOGRAM_MARGIN.right}
+                              y2={y}
+                            />
+                            <text className="links-summary-y-label" x="46" y={y + 4}>
+                              {value}
+                            </text>
+                          </g>
+                        );
+                      })}
+                      {linksHistogramXTicks.map((tick) => {
+                        const plotWidth =
+                          LINKS_HISTOGRAM_WIDTH -
+                          LINKS_HISTOGRAM_MARGIN.left -
+                          LINKS_HISTOGRAM_MARGIN.right;
+                        const x =
+                          LINKS_HISTOGRAM_MARGIN.left +
+                          (tick / linksHistogramXMax) * plotWidth;
+
+                        return (
+                          <g key={`links-histogram-x-${tick}`}>
+                            <line
+                              className="links-summary-x-tick"
+                              x1={x}
+                              y1={LINKS_HISTOGRAM_HEIGHT - LINKS_HISTOGRAM_MARGIN.bottom}
+                              x2={x}
+                              y2={LINKS_HISTOGRAM_HEIGHT - LINKS_HISTOGRAM_MARGIN.bottom + 5}
+                            />
+                            <text
+                              className="links-summary-x-label"
+                              x={x}
+                              y={LINKS_HISTOGRAM_HEIGHT - 20}
+                            >
+                              {tick}
+                            </text>
+                          </g>
+                        );
+                      })}
+                      {linksHistogramBins.map((bin) => {
+                        const plotWidth =
+                          LINKS_HISTOGRAM_WIDTH -
+                          LINKS_HISTOGRAM_MARGIN.left -
+                          LINKS_HISTOGRAM_MARGIN.right;
+                        const plotHeight =
+                          LINKS_HISTOGRAM_HEIGHT -
+                          LINKS_HISTOGRAM_MARGIN.top -
+                          LINKS_HISTOGRAM_MARGIN.bottom;
+                        const slotWidth = plotWidth / (linksHistogramXMax + 1);
+                        const barWidth = Math.max(3, Math.min(18, slotWidth * 0.72));
+                        const xCenter =
+                          LINKS_HISTOGRAM_MARGIN.left +
+                          (bin.linkCount / linksHistogramXMax) * plotWidth;
+                        const x = xCenter - barWidth / 2;
+                        let segmentTop =
+                          LINKS_HISTOGRAM_HEIGHT - LINKS_HISTOGRAM_MARGIN.bottom;
+
+                        return (
+                          <g key={`links-histogram-bin-${bin.linkCount}`}>
+                            {linksHistogramValleyKeys.map((valley) => {
+                              const count = bin.valleyCounts.get(valley) ?? 0;
+                              if (count === 0) return null;
+                              const height = (count / linksHistogramMaxTotal) * plotHeight;
+                              segmentTop -= height;
+
+                              return (
+                                <rect
+                                  key={`${bin.linkCount}-${valley}`}
+                                  className="links-summary-bar"
+                                  x={x}
+                                  y={segmentTop}
+                                  width={barWidth}
+                                  height={Math.max(1, height)}
+                                  fill={getLinksHistogramBarColor(valley)}
+                                >
+                                  <title>
+                                    {`${bin.linkCount} links: ${count} ${
+                                      count === 1 ? "concept" : "concepts"
+                                    }, ${valley}`}
+                                  </title>
+                                </rect>
+                              );
+                            })}
+                            <text
+                              className="links-summary-value-label"
+                              x={x + barWidth / 2}
+                              y={segmentTop - 5}
+                            >
+                              {bin.total}
+                            </text>
+                          </g>
+                        );
+                      })}
+                      <text
+                        className="links-summary-axis-title"
+                        x={LINKS_HISTOGRAM_WIDTH / 2}
+                        y={LINKS_HISTOGRAM_HEIGHT - 4}
+                      >
+                        Number of connections
+                      </text>
+                      <text
+                        className="links-summary-axis-title links-summary-axis-title-y"
+                        x={-LINKS_HISTOGRAM_HEIGHT / 2}
+                        y="16"
+                      >
+                        Count of nodes
+                      </text>
+                    </svg>
+                  </div>
+                  <div className="links-summary-legend" aria-label="Valley colors">
+                    {linksHistogramValleyKeys.map((valley) => (
+                      <span key={`links-histogram-legend-${valley}`}>
+                        <span
+                          className="links-summary-legend-swatch"
+                          style={{ backgroundColor: getLinksHistogramBarColor(valley) }}
+                        />
+                        {valley}
+                      </span>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          ) : linksSummaryReportTab === "trends" ? (
+            <div className="links-summary-trends" role="tabpanel" aria-label="Links trends">
+              <div className="links-summary-controls">
+                <label>
+                  <span>Min Strength</span>
+                  <select
+                    value={linksSummaryMinStrength}
+                    onChange={(event) =>
+                      handleLinksSummaryMinStrengthChange(Number(event.target.value))
+                    }
+                  >
+                    {[1, 2, 3, 4, 5].map((strength) => (
+                      <option key={strength} value={strength}>
+                        {strength}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="links-summary-chart-wrap">
+                <svg
+                  className="links-summary-trends-chart"
+                  viewBox={`0 0 ${LINKS_TRENDS_WIDTH} ${LINKS_TRENDS_HEIGHT}`}
+                  role="img"
+                  aria-label="Trends over row order"
+                >
+                  <line
+                    className="links-summary-axis"
+                    x1={LINKS_TRENDS_MARGIN.left}
+                    y1={LINKS_TRENDS_HEIGHT - LINKS_TRENDS_MARGIN.bottom}
+                    x2={LINKS_TRENDS_WIDTH - LINKS_TRENDS_MARGIN.right}
+                    y2={LINKS_TRENDS_HEIGHT - LINKS_TRENDS_MARGIN.bottom}
+                  />
+                  <line
+                    className="links-summary-axis"
+                    x1={LINKS_TRENDS_MARGIN.left}
+                    y1={LINKS_TRENDS_MARGIN.top}
+                    x2={LINKS_TRENDS_MARGIN.left}
+                    y2={LINKS_TRENDS_HEIGHT - LINKS_TRENDS_MARGIN.bottom}
+                  />
+                  <line
+                    className="links-summary-axis links-summary-axis-right"
+                    x1={LINKS_TRENDS_WIDTH - LINKS_TRENDS_MARGIN.right}
+                    y1={LINKS_TRENDS_MARGIN.top}
+                    x2={LINKS_TRENDS_WIDTH - LINKS_TRENDS_MARGIN.right}
+                    y2={LINKS_TRENDS_HEIGHT - LINKS_TRENDS_MARGIN.bottom}
+                  />
+
+                  {[0, 1, 2, 3, 4, 5].map((tick) => {
+                    const y = getLinksTrendsStrengthY(tick);
+
+                    return (
+                      <g key={`links-trends-strength-y-${tick}`}>
+                        <line
+                          className="links-summary-grid"
+                          x1={LINKS_TRENDS_MARGIN.left}
+                          y1={y}
+                          x2={LINKS_TRENDS_WIDTH - LINKS_TRENDS_MARGIN.right}
+                          y2={y}
+                        />
+                        <text className="links-summary-y-label" x="48" y={y + 4}>
+                          {tick}
+                        </text>
+                      </g>
+                    );
+                  })}
+                  {[0, 0.25, 0.5, 0.75, 1].map((tick) => {
+                    const y =
+                      LINKS_TRENDS_HEIGHT -
+                      LINKS_TRENDS_MARGIN.bottom -
+                      tick * linksTrendsPlotHeight;
+                    const value = Math.round(linksTrendsRightAxisMax * tick);
+
+                    return (
+                      <text
+                        key={`links-trends-count-y-${tick}`}
+                        className="links-summary-y-label links-summary-y-label-right"
+                        x={LINKS_TRENDS_WIDTH - 52}
+                        y={y + 4}
+                      >
+                        {value}
+                      </text>
+                    );
+                  })}
+                  {linksTrendsXTicks.map((tick) => {
+                    const x = getLinksTrendsX(tick);
+
+                    return (
+                      <g key={`links-trends-x-${tick}`}>
+                        <line
+                          className="links-summary-x-tick"
+                          x1={x}
+                          y1={LINKS_TRENDS_HEIGHT - LINKS_TRENDS_MARGIN.bottom}
+                          x2={x}
+                          y2={LINKS_TRENDS_HEIGHT - LINKS_TRENDS_MARGIN.bottom + 5}
+                        />
+                        <text
+                          className="links-summary-x-label"
+                          x={x}
+                          y={LINKS_TRENDS_HEIGHT - 22}
+                        >
+                          {tick}
+                        </text>
+                      </g>
+                    );
+                  })}
+
+                  <path
+                    className="links-trends-line links-trends-out-strength"
+                    d={linksTrendsOutgoingStrengthPath}
+                  />
+                  <path
+                    className="links-trends-line links-trends-in-strength"
+                    d={linksTrendsIncomingStrengthPath}
+                  />
+                  <path
+                    className="links-trends-line links-trends-out-count"
+                    d={linksTrendsOutgoingCountPath}
+                  />
+                  <path
+                    className="links-trends-line links-trends-in-count"
+                    d={linksTrendsIncomingCountPath}
+                  />
+
+                  <text
+                    className="links-summary-axis-title"
+                    x={LINKS_TRENDS_WIDTH / 2}
+                    y={LINKS_TRENDS_HEIGHT - 5}
+                  >
+                    Row counter
+                  </text>
+                  <text
+                    className="links-summary-axis-title links-summary-axis-title-y"
+                    x={-LINKS_TRENDS_HEIGHT / 2}
+                    y="16"
+                  >
+                    Average strength
+                  </text>
+                  <text
+                    className="links-summary-axis-title links-summary-axis-title-y links-summary-axis-title-right"
+                    x={-LINKS_TRENDS_HEIGHT / 2}
+                    y={LINKS_TRENDS_WIDTH - 12}
+                  >
+                    Number of connections
+                  </text>
+                </svg>
+              </div>
+              <div className="links-summary-legend" aria-label="Trend series">
+                <span>
+                  <span className="links-summary-legend-line links-trends-out-strength" />
+                  Outgoing avg strength
+                </span>
+                <span>
+                  <span className="links-summary-legend-line links-trends-in-strength" />
+                  Incoming avg strength
+                </span>
+                <span>
+                  <span className="links-summary-legend-line links-trends-out-count" />
+                  Outgoing count
+                </span>
+                <span>
+                  <span className="links-summary-legend-line links-trends-in-count" />
+                  Incoming count
+                </span>
+              </div>
+            </div>
+          ) : linksSummaryReportTab === "valleyTrends" ? (
+            <div
+              className="links-summary-valley-trends"
+              role="tabpanel"
+              aria-label="Valley trends"
+            >
+              <div className="links-summary-controls">
+                <label>
+                  <span>Direction</span>
+                  <select
+                    value={valleyTrendsDirection}
+                    onChange={(event) =>
+                      setValleyTrendsDirection(event.target.value as LinksSummaryDirection)
+                    }
+                  >
+                    <option value="outgoing">Outgoing</option>
+                    <option value="incoming">Incoming</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Min Strength</span>
+                  <select
+                    value={linksSummaryMinStrength}
+                    onChange={(event) =>
+                      handleLinksSummaryMinStrengthChange(Number(event.target.value))
+                    }
+                  >
+                    {[1, 2, 3, 4, 5].map((strength) => (
+                      <option key={strength} value={strength}>
+                        {strength}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="links-summary-chart-wrap">
+                <svg
+                  className="links-summary-trends-chart"
+                  viewBox={`0 0 ${LINKS_TRENDS_WIDTH} ${LINKS_TRENDS_HEIGHT}`}
+                  role="img"
+                  aria-label={`Stacked ${valleyTrendsDirection} valley trends over row order`}
+                >
+                  <line
+                    className="links-summary-axis"
+                    x1={LINKS_TRENDS_MARGIN.left}
+                    y1={LINKS_TRENDS_HEIGHT - LINKS_TRENDS_MARGIN.bottom}
+                    x2={LINKS_TRENDS_WIDTH - LINKS_TRENDS_MARGIN.right}
+                    y2={LINKS_TRENDS_HEIGHT - LINKS_TRENDS_MARGIN.bottom}
+                  />
+                  <line
+                    className="links-summary-axis"
+                    x1={LINKS_TRENDS_MARGIN.left}
+                    y1={LINKS_TRENDS_MARGIN.top}
+                    x2={LINKS_TRENDS_MARGIN.left}
+                    y2={LINKS_TRENDS_HEIGHT - LINKS_TRENDS_MARGIN.bottom}
+                  />
+                  <line
+                    className="links-summary-axis links-summary-axis-right"
+                    x1={LINKS_TRENDS_WIDTH - LINKS_TRENDS_MARGIN.right}
+                    y1={LINKS_TRENDS_MARGIN.top}
+                    x2={LINKS_TRENDS_WIDTH - LINKS_TRENDS_MARGIN.right}
+                    y2={LINKS_TRENDS_HEIGHT - LINKS_TRENDS_MARGIN.bottom}
+                  />
+                  {[0, 0.25, 0.5, 0.75, 1].map((tick) => {
+                    const y =
+                      LINKS_TRENDS_HEIGHT -
+                      LINKS_TRENDS_MARGIN.bottom -
+                      tick * linksTrendsPlotHeight;
+                    const value = Math.round(valleyTrendYAxisMax * tick);
+
+                    return (
+                      <g key={`valley-trends-y-${tick}`}>
+                        <line
+                          className="links-summary-grid"
+                          x1={LINKS_TRENDS_MARGIN.left}
+                          y1={y}
+                          x2={LINKS_TRENDS_WIDTH - LINKS_TRENDS_MARGIN.right}
+                          y2={y}
+                        />
+                        <text className="links-summary-y-label" x="48" y={y + 4}>
+                          {value}
+                        </text>
+                      </g>
+                    );
+                  })}
+                  {[0, 1].map((tick) => {
+                    const y = getRowValleyY(tick);
+
+                    return (
+                      <g key={`row-valley-y-${tick}`}>
+                        <line
+                          className="links-summary-x-tick"
+                          x1={LINKS_TRENDS_WIDTH - LINKS_TRENDS_MARGIN.right}
+                          y1={y}
+                          x2={LINKS_TRENDS_WIDTH - LINKS_TRENDS_MARGIN.right + 5}
+                          y2={y}
+                        />
+                        <text
+                          className="links-summary-y-label links-summary-y-label-right"
+                          x={LINKS_TRENDS_WIDTH - 52}
+                          y={y + 4}
+                        >
+                          {tick}
+                        </text>
+                      </g>
+                    );
+                  })}
+                  {linksTrendsXTicks.map((tick) => {
+                    const x = getLinksTrendsX(tick);
+
+                    return (
+                      <g key={`valley-trends-x-${tick}`}>
+                        <line
+                          className="links-summary-x-tick"
+                          x1={x}
+                          y1={LINKS_TRENDS_HEIGHT - LINKS_TRENDS_MARGIN.bottom}
+                          x2={x}
+                          y2={LINKS_TRENDS_HEIGHT - LINKS_TRENDS_MARGIN.bottom + 5}
+                        />
+                        <text
+                          className="links-summary-x-label"
+                          x={x}
+                          y={LINKS_TRENDS_HEIGHT - 22}
+                        >
+                          {tick}
+                        </text>
+                      </g>
+                    );
+                  })}
+                  {valleyTrendRows.map((row) => {
+                    const slotWidth = linksTrendsPlotWidth / (linksTrendsXMax + 1);
+                    const connectionBarWidth = Math.max(2, Math.min(12, slotWidth * 0.42));
+                    const rowValleyBarWidth = Math.max(2, Math.min(7, slotWidth * 0.24));
+                    const gap = Math.max(1, Math.min(3, slotWidth * 0.08));
+                    const groupWidth = connectionBarWidth + gap + rowValleyBarWidth;
+                    const x = getLinksTrendsX(row.rowIndex) - groupWidth / 2;
+                    const rowValleyX = x + connectionBarWidth + gap;
+                    const rowValleyY = getRowValleyY(1);
+                    const rowValleyHeight =
+                      LINKS_TRENDS_HEIGHT - LINKS_TRENDS_MARGIN.bottom - rowValleyY;
+                    let segmentTop = LINKS_TRENDS_HEIGHT - LINKS_TRENDS_MARGIN.bottom;
+                    let stackedCount = 0;
+
+                    return (
+                      <g key={`valley-trend-row-${row.rowIndex}`}>
+                        <rect
+                          className="links-summary-row-valley-bar"
+                          x={rowValleyX}
+                          y={rowValleyY}
+                          width={rowValleyBarWidth}
+                          height={rowValleyHeight}
+                          fill={getRowValleyBarColor(row.rowValley)}
+                        >
+                          <title>{`Row ${row.rowIndex} valley: ${row.rowValley}`}</title>
+                        </rect>
+                        {valleyTrendKeys.map((valley) => {
+                          const count = row.valleyCounts.get(valley) ?? 0;
+                          if (count === 0) return null;
+                          stackedCount += count;
+                          const nextY = getValleyTrendY(stackedCount);
+                          const height = segmentTop - nextY;
+                          segmentTop = nextY;
+
+                          return (
+                            <rect
+                              key={`${row.rowIndex}-${valley}`}
+                              className="links-summary-bar"
+                              x={x}
+                              y={nextY}
+                              width={connectionBarWidth}
+                              height={Math.max(1, height)}
+                              fill={getLinksHistogramBarColor(valley)}
+                            >
+                              <title>
+                                {`Row ${row.rowIndex}: ${count} ${
+                                  count === 1 ? "connection" : "connections"
+                                }, ${valley}`}
+                              </title>
+                            </rect>
+                          );
+                        })}
+                      </g>
+                    );
+                  })}
+                  <text
+                    className="links-summary-axis-title"
+                    x={LINKS_TRENDS_WIDTH / 2}
+                    y={LINKS_TRENDS_HEIGHT - 5}
+                  >
+                    Row counter
+                  </text>
+                  <text
+                    className="links-summary-axis-title links-summary-axis-title-y"
+                    x={-LINKS_TRENDS_HEIGHT / 2}
+                    y="16"
+                  >
+                    Number of connections
+                  </text>
+                  <text
+                    className="links-summary-axis-title links-summary-axis-title-y links-summary-axis-title-right"
+                    x={-LINKS_TRENDS_HEIGHT / 2}
+                    y={LINKS_TRENDS_WIDTH - 12}
+                  >
+                    Row valley
+                  </text>
+                </svg>
+              </div>
+              <div className="links-summary-legend" aria-label="Valley colors">
+                <span>
+                  <span className="links-summary-legend-swatch links-summary-row-valley-swatch" />
+                  Row valley
+                </span>
+                {valleyTrendKeys.map((valley) => (
+                  <span key={`valley-trends-legend-${valley}`}>
+                    <span
+                      className="links-summary-legend-swatch"
+                      style={{ backgroundColor: getLinksHistogramBarColor(valley) }}
+                    />
+                    {valley}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div
+              className="links-summary-valley-connections"
+              role="tabpanel"
+              aria-label="Valley connections"
+            >
+              <div className="links-summary-controls">
+                <label>
+                  <span>Direction</span>
+                  <select
+                    value={valleyConnectionsDirection}
+                    onChange={(event) =>
+                      setValleyConnectionsDirection(event.target.value as LinksConnectionDirection)
+                    }
+                  >
+                    <option value="all">All</option>
+                    <option value="outgoing">Outgoing</option>
+                    <option value="incoming">Incoming</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Valley</span>
+                  <select
+                    value={valleyConnectionsValleyFilter}
+                    onChange={(event) => setValleyConnectionsValleyFilter(event.target.value)}
+                  >
+                    <option value="All">All</option>
+                    {valleyTrendKeys.map((valley) => (
+                      <option key={valley} value={valley}>
+                        {valley}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Min Strength</span>
+                  <select
+                    value={linksSummaryMinStrength}
+                    onChange={(event) =>
+                      handleLinksSummaryMinStrengthChange(Number(event.target.value))
+                    }
+                  >
+                    {[1, 2, 3, 4, 5].map((strength) => (
+                      <option key={strength} value={strength}>
+                        {strength}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="links-summary-check">
+                  <input
+                    type="checkbox"
+                    checked={showIntraValleyConnections}
+                    onChange={(event) => setShowIntraValleyConnections(event.target.checked)}
+                  />
+                  Include within-valley
+                </label>
+              </div>
+              <div className="links-summary-chart-wrap">
+                <svg
+                  className="links-summary-connections-chart"
+                  viewBox={`0 0 ${VALLEY_CONNECTIONS_WIDTH} ${VALLEY_CONNECTIONS_HEIGHT}`}
+                  role="img"
+                  aria-label="Circular valley connections"
+                >
+                  <defs>
+                    <marker
+                      id="valley-connection-arrow"
+                      markerWidth="3.5"
+                      markerHeight="3.5"
+                      refX="3"
+                      refY="1.75"
+                      orient="auto"
+                      markerUnits="strokeWidth"
+                    >
+                      <path d="M0,0 L3.5,1.75 L0,3.5 Z" />
+                    </marker>
+                  </defs>
+                  <circle
+                    className="links-connections-orbit"
+                    cx={VALLEY_CONNECTIONS_CENTER_X}
+                    cy={VALLEY_CONNECTIONS_CENTER_Y}
+                    r={VALLEY_CONNECTIONS_RADIUS}
+                  />
+                  {valleyConnectionLinks.map((link, index) => {
+                    const color = link.isIntraValley
+                      ? "#9a9a9a"
+                      : getLinksHistogramBarColor(link.source.valley);
+                    const strokeWidth = Math.max(0.55, Math.min(2.6, 0.45 + link.strength * 0.32));
+
+                    return (
+                      <path
+                        key={`valley-connection-link-${index}-${link.source.index}-${link.target.index}`}
+                        className={`links-connections-link links-connections-link-${link.direction}${
+                          link.isIntraValley ? " links-connections-link-intra" : ""
+                        }`}
+                        d={`M ${link.source.x.toFixed(2)} ${link.source.y.toFixed(2)} Q ${VALLEY_CONNECTIONS_CENTER_X} ${VALLEY_CONNECTIONS_CENTER_Y} ${link.target.x.toFixed(2)} ${link.target.y.toFixed(2)}`}
+                        stroke={color}
+                        strokeWidth={strokeWidth}
+                        markerEnd="url(#valley-connection-arrow)"
+                      >
+                        <title>
+                          {`${link.source.concept.title} -> ${link.target.concept.title}, strength ${link.strength}`}
+                        </title>
+                      </path>
+                    );
+                  })}
+                  {valleyConnectionNodes.map((node) => {
+                    const labelRadius = VALLEY_CONNECTIONS_RADIUS + 21;
+                    const labelX =
+                      VALLEY_CONNECTIONS_CENTER_X + Math.cos(node.angle) * labelRadius;
+                    const labelY =
+                      VALLEY_CONNECTIONS_CENTER_Y + Math.sin(node.angle) * labelRadius;
+                    const labelAngle = (node.angle * 180) / Math.PI;
+                    const labelRotation =
+                      labelAngle > 90 || labelAngle < -90 ? labelAngle + 180 : labelAngle;
+
+                    return (
+                      <g key={`valley-connection-node-${node.concept.id}`}>
+                        <circle
+                          className="links-connections-node"
+                          cx={node.x}
+                          cy={node.y}
+                          r="4.2"
+                          fill={getLinksHistogramBarColor(node.valley)}
+                        >
+                          <title>{`${node.concept.title}, ${node.valley}`}</title>
+                        </circle>
+                        <text
+                          className="links-connections-node-label"
+                          x={labelX}
+                          y={labelY}
+                          textAnchor="middle"
+                          transform={`rotate(${labelRotation.toFixed(2)} ${labelX.toFixed(2)} ${labelY.toFixed(2)})`}
+                        >
+                          {node.concept.id}
+                        </text>
+                      </g>
+                    );
+                  })}
+                  {valleyTrendKeys.map((valley) => {
+                    const nodes = valleyConnectionNodes.filter((node) => node.valley === valley);
+                    if (nodes.length === 0) return null;
+                    const averageAngle =
+                      nodes.reduce((sum, node) => sum + node.angle, 0) / nodes.length;
+                    const labelRadius = VALLEY_CONNECTIONS_RADIUS + 58;
+                    const x =
+                      VALLEY_CONNECTIONS_CENTER_X + Math.cos(averageAngle) * labelRadius;
+                    const y =
+                      VALLEY_CONNECTIONS_CENTER_Y + Math.sin(averageAngle) * labelRadius;
+
+                    return (
+                      <text
+                        key={`valley-connection-label-${valley}`}
+                        className="links-connections-valley-label"
+                        x={x}
+                        y={y}
+                        textAnchor={Math.cos(averageAngle) >= 0 ? "start" : "end"}
+                      >
+                        {valley}
+                      </text>
+                    );
+                  })}
+                </svg>
+              </div>
+              <p className="links-summary-summary">
+                {valleyConnectionLinks.length} connections shown. Direction:{" "}
+                {valleyConnectionsDirection === "all" ? "All" : valleyConnectionsDirection}.
+                Valley: {valleyConnectionsValleyFilter}. Min Strength: {linksSummaryMinStrength}.
+                Intra-valley links are{" "}
+                {showIntraValleyConnections ? "included as gray lines" : "ignored"}.
+              </p>
+              <div className="links-summary-legend" aria-label="Valley colors">
+                {valleyTrendKeys.map((valley) => (
+                  <span key={`valley-connections-legend-${valley}`}>
+                    <span
+                      className="links-summary-legend-swatch"
+                      style={{ backgroundColor: getLinksHistogramBarColor(valley) }}
+                    />
+                    {valley}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
