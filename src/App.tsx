@@ -22,6 +22,7 @@ type ParsedSheet = {
   angleMatrix: number[][];
   strengthMatrix: number[][];
   foundTuples: boolean;
+  omittedZeroOnlyConceptCount: number;
   n: number;
 };
 
@@ -212,7 +213,7 @@ const GRAPH_CENTER_X = GRAPH_WIDTH / 2 + 50;
 const GRAPH_CENTER_Y = GRAPH_HEIGHT / 2;
 const GRAPH_NODE_CLICK_ZOOM = 1.1;
 const APP_TITLE = "Wayfinding";
-const DEPLOYMENT_LABEL = "Wayfinder Alpha Deployed June 23, 2026, 9:34 PM PDT";
+const DEPLOYMENT_LABEL = "Wayfinder Alpha Deployed June 29, 2026, 4:33 PM PDT";
 // Former titles: "Your Body Wisdom Encyclopedia"; "The Book of Your Body Wisdom"
 const COMMENT_FORM_ACTION =
   "https://docs.google.com/forms/d/e/1FAIpQLSfRsy9X9bVI-CdppeEJzgSb3ZbIa7dqoELENtiVRuVue1M4lw/formResponse";
@@ -681,7 +682,55 @@ const parseSheet = (data: any[][]): ParsedSheet => {
     }
   });
 
-  return { concepts, angleMatrix, strengthMatrix, foundTuples, n };
+  const hasAnyConnection = (index: number) => {
+    for (let j = 0; j < concepts.length; j++) {
+      if (j === index) continue;
+      const outgoingStrength = strengthMatrix[index]?.[j] ?? 0;
+      const outgoingAngle = angleMatrix[index]?.[j] ?? 0;
+      const incomingStrength = strengthMatrix[j]?.[index] ?? 0;
+      const incomingAngle = angleMatrix[j]?.[index] ?? 0;
+
+      if (
+        outgoingStrength > 0 ||
+        outgoingAngle > 0 ||
+        incomingStrength > 0 ||
+        incomingAngle > 0
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+  const isZeroPlaceholderConcept = (concept: Concept) =>
+    norm(concept.title) === "0" &&
+    norm(concept.entire) === "0" &&
+    norm(concept.valley) === "0";
+  const keptConceptIndexes = concepts
+    .map((_, index) => index)
+    .filter((index) => !isZeroPlaceholderConcept(concepts[index]) && hasAnyConnection(index));
+  const omittedZeroOnlyConceptCount = concepts.length - keptConceptIndexes.length;
+
+  if (omittedZeroOnlyConceptCount === 0) {
+    return { concepts, angleMatrix, strengthMatrix, foundTuples, omittedZeroOnlyConceptCount, n };
+  }
+
+  const compactConcepts = keptConceptIndexes.map((index) => concepts[index]);
+  const compactAngleMatrix = keptConceptIndexes.map((sourceIndex) =>
+    keptConceptIndexes.map((targetIndex) => angleMatrix[sourceIndex]?.[targetIndex] ?? 0)
+  );
+  const compactStrengthMatrix = keptConceptIndexes.map((sourceIndex) =>
+    keptConceptIndexes.map((targetIndex) => strengthMatrix[sourceIndex]?.[targetIndex] ?? 0)
+  );
+
+  return {
+    concepts: compactConcepts,
+    angleMatrix: compactAngleMatrix,
+    strengthMatrix: compactStrengthMatrix,
+    foundTuples,
+    omittedZeroOnlyConceptCount,
+    n,
+  };
 };
 
 const findHeaderRow = (data: any[][]) => {
@@ -730,6 +779,7 @@ const analyzeMatrixData = (data: any[][], sourceName: string): MatrixQaReport =>
   const videoCol = colIndexOf("video link");
   const shortVideoCol = colIndexOf("short video");
   const longVideoCol = colIndexOf("long video");
+  const valleyCol = colIndexOf("valley");
 
   if (idCol < 0) issues.push({ severity: "Error", message: "Missing required ID column." });
   if (titleCol < 0) issues.push({ severity: "Error", message: "Missing required Title column." });
@@ -860,6 +910,9 @@ const analyzeMatrixData = (data: any[][], sourceName: string): MatrixQaReport =>
     const effectiveRowId = Number.isFinite(rowId) ? rowId : expectedId;
     const title = titleCol >= 0 ? String(trimOrEmpty(row[titleCol])) : "";
     const text = textCol >= 0 ? String(trimOrEmpty(row[textCol])) : "";
+    const valley = valleyCol >= 0 ? String(trimOrEmpty(row[valleyCol])) : "";
+    const isZeroPlaceholderConcept =
+      norm(title) === "0" && norm(text) === "0" && norm(valley) === "0";
     const hasPdf = pdfCol >= 0 && String(trimOrEmpty(row[pdfCol])) !== "";
     const hasVideo =
       (videoCol >= 0 && String(trimOrEmpty(row[videoCol])) !== "") ||
@@ -921,6 +974,17 @@ const analyzeMatrixData = (data: any[][], sourceName: string): MatrixQaReport =>
         row: sheetRowNumber,
         column: textCol + 1,
         message: `Concept row is missing content text${mediaNote}`,
+      });
+    }
+
+    if (isZeroPlaceholderConcept) {
+      issues.push({
+        severity: "Warning",
+        id: effectiveRowId,
+        title,
+        row: sheetRowNumber,
+        message:
+          "Placeholder concept row has only 0 in Title, Entry Text, and Valley. It will be omitted when loaded.",
       });
     }
 
@@ -989,7 +1053,7 @@ const analyzeMatrixData = (data: any[][], sourceName: string): MatrixQaReport =>
       }
     }
 
-    if (rowCandidateCount === 0) {
+    if (!isZeroPlaceholderConcept && rowCandidateCount === 0) {
       issues.push({
         severity: "Warning",
         id: effectiveRowId,
@@ -999,7 +1063,7 @@ const analyzeMatrixData = (data: any[][], sourceName: string): MatrixQaReport =>
       });
     }
 
-    if (incomingColumnIndex >= 0 && incomingCandidateCount === 0) {
+    if (!isZeroPlaceholderConcept && incomingColumnIndex >= 0 && incomingCandidateCount === 0) {
       issues.push({
         severity: "Warning",
         id: effectiveRowId,
@@ -1914,7 +1978,11 @@ function App() {
     setLoadError("");
 
     console.log(
-      `${sourceLabel}: loaded ${parsed.n} concepts; ` +
+      `${sourceLabel}: loaded ${parsed.concepts.length} active concepts` +
+      (parsed.omittedZeroOnlyConceptCount > 0
+        ? ` (${parsed.omittedZeroOnlyConceptCount} all-zero concepts omitted from ${parsed.n} matrix rows)`
+        : "") +
+      "; " +
       (parsed.foundTuples ? "detected tuple 'strength; angle' format" : "using legacy angle-only format") +
       `; loaded ${workbookData.definitions.length} definitions`
     );
@@ -3310,6 +3378,7 @@ function App() {
           <p className="about-title">FDK Network of Knowledge</p>
           <p>{DEPLOYMENT_LABEL}</p>
           <p>All content is created by Carie Fox.</p>
+          <p>App creation by Wonderanilam.com</p>
           <p>Copyright Carie Fox 2026. All rights reserved</p>
         </div>
       )}
