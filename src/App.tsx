@@ -213,7 +213,7 @@ const GRAPH_CENTER_X = GRAPH_WIDTH / 2 + 50;
 const GRAPH_CENTER_Y = GRAPH_HEIGHT / 2;
 const GRAPH_NODE_CLICK_ZOOM = 1.1;
 const APP_TITLE = "Wayfinding";
-const DEPLOYMENT_LABEL = "Wayfinder Alpha Deployed June 29, 2026, 4:33 PM PDT";
+const DEPLOYMENT_LABEL = "Wayfinder Alpha Deployed July 7, 2026, 10:31 PM PDT";
 // Former titles: "Your Body Wisdom Encyclopedia"; "The Book of Your Body Wisdom"
 const COMMENT_FORM_ACTION =
   "https://docs.google.com/forms/d/e/1FAIpQLSfRsy9X9bVI-CdppeEJzgSb3ZbIa7dqoELENtiVRuVue1M4lw/formResponse";
